@@ -10,11 +10,13 @@ import cv2
 from fastapi.testclient import TestClient
 
 from intelligence.detector import AutoDetector
-from intelligence.tuner import AdaptiveTuner
+from intelligence.experience_engine import ExperienceEngine
+from intelligence.knowledge_base import KnowledgeBase
 from intelligence.learning import LearningEngine
 from intelligence.orchestrator import AutoOrchestrator
 from intelligence.self_improver import SelfImprover
 from intelligence.training import CaptchaDataset
+from intelligence.tuner import AdaptiveTuner
 from intelligence.worker import AutoWorker
 from solver_engine.base import BaseSolver, CaptchaType, SolverResult
 from solver_engine.registry import SolverRegistry
@@ -339,3 +341,98 @@ def test_self_improver_auto_confirm():
         assert stats["auto_confirmed"] >= 1
     finally:
         os.unlink(path)
+
+
+def test_knowledge_base_record_and_find():
+    import tempfile, os
+
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+        path = f.name
+    try:
+        kb = KnowledgeBase(path=path)
+        features = {"saturation": 0.1, "component_count": 5.0, "avg_w": 10.0}
+        key = kb.record_success("image", features, text="ABCD", confidence=0.95)
+        assert key is not None
+
+        # العثور على الحل المعروف
+        similar = kb.find_similar("image", features, min_success_rate=0.5)
+        assert len(similar) >= 1
+        assert similar[0].text == "ABCD"
+
+        # اقتراح المعاملات
+        suggestion = kb.suggest_params("image", features)
+        assert suggestion is not None
+        assert suggestion["known_text"] == "ABCD"
+
+        stats = kb.stats()
+        assert stats["total_patterns"] >= 1
+    finally:
+        os.unlink(path)
+
+
+def test_experience_engine_level_and_wisdom():
+    kb = KnowledgeBase()
+    engine = ExperienceEngine(knowledge_base=kb)
+
+    # تسجيل نجاحات متعددة لرفع المستوى
+    for i in range(15):
+        engine.record_solution(
+            captcha_type="image",
+            success=True,
+            confidence=0.9,
+            features={"saturation": 0.1, "component_count": 5.0},
+            text=f"TEXT{i}",
+        )
+
+    status = engine.status()
+    assert status["experience_level"] >= 2  # 15 सफलات → المستوى 2+
+    assert status["total_solved"] == 15
+    assert status["success_rate"] == 1.0
+    assert status["knowledge_patterns"] >= 1
+    assert "wisdom_score" in status
+
+
+def test_experience_known_solution_lookup():
+    kb = KnowledgeBase()
+    engine = ExperienceEngine(knowledge_base=kb)
+
+    features = {"saturation": 0.1, "component_count": 5.0, "avg_w": 10.0, "avg_h": 8.0}
+
+    # تسجيل حل ناجح
+    engine.record_solution(
+        captcha_type="image",
+        success=True,
+        confidence=0.95,
+        features=features,
+        text="SECRET",
+    )
+
+    # البحث عنه
+    known = engine.find_known_solution("image", features)
+    assert known is not None
+    assert known["text"] == "SECRET"
+    assert known["source"] == "knowledge_base"
+    assert known["confidence"] >= 0.95
+
+
+def test_experience_endpoints():
+    with TestClient(main_mod.app) as client:
+        # إحصائيات الخبرة
+        resp = client.get("/experience/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "experience_level" in data
+        assert "wisdom_score" in data
+
+        # قاعدة المعرفة
+        resp = client.get("/experience/knowledge")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "total_patterns" in data
+
+        # البحث عن حل معروف
+        resp = client.post(
+            "/experience/find",
+            json={"captcha_type": "image", "features": {"saturation": 0.1, "component_count": 5.0}},
+        )
+        assert resp.status_code == 200

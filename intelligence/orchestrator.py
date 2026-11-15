@@ -13,6 +13,8 @@ from solver_engine.image import ImageSolveConfig
 
 from .analysis import CaptchaAnalyzer
 from .detector import AutoDetector, Detection
+from .experience_engine import ExperienceEngine
+from .knowledge_base import KnowledgeBase
 from .learning import LearningEngine
 from .monitor import IntelligentMonitor, SolveEvent
 from .solver_strategy import IntelligentSolverStrategy
@@ -31,6 +33,7 @@ class AutoResult:
     trace: List[str] = field(default_factory=list)
     alerts: List[Dict[str, Any]] = field(default_factory=list)
     total_time_ms: int = 0
+    experience: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -43,6 +46,7 @@ class AutoResult:
             "trace": self.trace,
             "alerts": self.alerts,
             "total_time_ms": self.total_time_ms,
+            "experience": self.experience,
         }
 
 
@@ -58,6 +62,8 @@ class AutoOrchestrator:
         tuner: Optional[AdaptiveTuner] = None,
         learner: Optional[LearningEngine] = None,
         detector: Optional[AutoDetector] = None,
+        knowledge_base: Optional[KnowledgeBase] = None,
+        experience: Optional[ExperienceEngine] = None,
         external_available: bool = False,
     ) -> None:
         self.registry = registry
@@ -67,6 +73,8 @@ class AutoOrchestrator:
         self.tuner = tuner or AdaptiveTuner()
         self.learner = learner or LearningEngine()
         self.detector = detector or AutoDetector()
+        self.knowledge_base = knowledge_base or KnowledgeBase()
+        self.experience = experience or ExperienceEngine(knowledge_base=self.knowledge_base)
         self.external_available = external_available
 
     def _decode(self, image_bytes: Optional[bytes]) -> Optional[Any]:
@@ -123,6 +131,47 @@ class AutoOrchestrator:
             ctype = CaptchaType.IMAGE
             trace.append(f"نوع غير معروف '{ctype_str}' → افتراض image")
 
+        # 2.5) التحقق من الحل المعروف في قاعدة الخبرة (تسريع وتجنب إعادة الحل)
+        features_for_exp = analysis.features if analysis else {}
+        known = self.experience.find_known_solution(ctype.value, features_for_exp)
+        if known and known.get("text"):
+            result = SolverResult(
+                success=True,
+                captcha_type=ctype,
+                text=known["text"],
+                token=known.get("token"),
+                confidence=known["confidence"],
+                response_time_ms=1,
+                metadata={"source": "knowledge_base", "pattern_id": known.get("pattern_id")},
+            )
+            trace.append(f"حل معروف من الخبرة: النص={known['text']} ثقة={known['confidence']:.2f}")
+            # تسجيل الحل في المراقبة والتعلّم
+            reward = self.learner.reward_from_result(True, known["confidence"], 1)
+            self.learner.update("knowledge_direct", reward)
+            event = SolveEvent(
+                timestamp=self._now(),
+                captcha_type=ctype.value,
+                success=True,
+                response_time_ms=1,
+                confidence=known["confidence"],
+                strategy="knowledge_direct",
+                error=None,
+            )
+            self.monitor.record(event)
+            total_ms = int((time.time() - start) * 1000)
+            return AutoResult(
+                result=result,
+                detected_type=detection.captcha_type if detection else ctype.value,
+                detection_confidence=detection.confidence if detection else 1.0,
+                strategy_used="knowledge_direct",
+                params_used={},
+                escalations=0,
+                trace=trace,
+                alerts=[],
+                total_time_ms=total_ms,
+                experience=self.experience.status(),
+            )
+
         # 3) قرار الاستراتيجية من محرك التعلم + الاستراتيجية التحليلية
         learned_arm = self.learner.select()
         decision = self.strategy.decide(
@@ -131,9 +180,18 @@ class AutoOrchestrator:
         strategy_used = learned_arm
         trace.append(f"استراتيجية متعلمة: {learned_arm} (تحليلي: {decision.strategy})")
 
-        # 4) الضبط التلقائي للمعاملات
-        tuned = self.tuner.choose(ctype.value)
-        trace.append(f"معاملات مضبوطة: {tuned}")
+        # 4) الضبط التلقائي للمعاملات (مع معرفة سابقة إن وُجدت)
+        features = analysis.features if analysis else {}
+        suggestion = self.knowledge_base.suggest_params(ctype.value, features)
+        if suggestion:
+            tuned = suggestion["params"]
+            strategy_used = suggestion["strategy"]
+            trace.append(
+                f"معاملات من قاعدة المعرفة: {tuned} (استراتيجية {strategy_used}, ثقة معرفية {suggestion.get('confidence', 0):.2f})"
+            )
+        else:
+            tuned = self.tuner.choose(ctype.value)
+            trace.append(f"معاملات مضبوطة: {tuned}")
 
         # 5) تنفيذ الحل مع سلسلة تصعيد
         result = self._attempt(
@@ -207,6 +265,17 @@ class AutoOrchestrator:
         )
         new_alerts = self.monitor.record(event)
 
+        # 8) تسجيل الحل في محرك الخبرة الذاتي
+        features_for_exp = features if features else {}
+        self.experience.record_solution(
+            captcha_type=ctype.value,
+            success=result.success,
+            confidence=result.confidence,
+            features=features_for_exp,
+            text=result.text or result.token,
+            token=result.token,
+        )
+
         total_ms = int((time.time() - start) * 1000)
         trace.append(
             f"اكتمل: نجاح={result.success}, ثقة={result.confidence:.2f}, تصعيدات={escalated}, "
@@ -226,6 +295,7 @@ class AutoOrchestrator:
             trace=trace,
             alerts=[a.__dict__ for a in new_alerts],
             total_time_ms=total_ms,
+            experience=self.experience.status(),
         )
 
     def _attempt(

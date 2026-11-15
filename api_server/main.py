@@ -27,6 +27,8 @@ from intelligence import (
     LearningEngine,
     AutoOrchestrator,
     AutoWorker,
+    KnowledgeBase,
+    ExperienceEngine,
 )
 
 from api_server.auth import (
@@ -118,6 +120,11 @@ human_behavior = HumanBehavior()
 detector = AutoDetector()
 tuner = AdaptiveTuner()
 learner = LearningEngine()
+
+# قاعدة المعرفة المشتركة
+knowledge_base = KnowledgeBase()
+experience_engine = ExperienceEngine(knowledge_base=knowledge_base)
+
 orchestrator = AutoOrchestrator(
     registry=registry,
     monitor=monitor,
@@ -126,6 +133,8 @@ orchestrator = AutoOrchestrator(
     tuner=tuner,
     learner=learner,
     detector=detector,
+    knowledge_base=knowledge_base,
+    experience=experience_engine,
 )
 worker = AutoWorker(orchestrator=orchestrator, concurrency=2)
 
@@ -143,7 +152,7 @@ async def lifespan(_app: FastAPI):
         await worker.stop()
 
 
-app = FastAPI(title="NoneCap Clone API", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="NoneCap Clone API", version="0.5.0", lifespan=lifespan)
 app.state.limiter = limiter
 
 # خدمة الملفات الثابتة للوحة الويب
@@ -807,6 +816,11 @@ class BulkSubmitResponse(BaseModel):
     count: int
 
 
+class ExperienceFindRequest(BaseModel):
+    captcha_type: str
+    features: Optional[Dict[str, Any]] = None
+
+
 BULK_JOBS: Dict[str, Dict[str, Any]] = {}
 
 
@@ -898,6 +912,40 @@ async def self_improve_retrain(
 ) -> Dict[str, Any]:
     _auth(credentials)
     return self_improver.maybe_retrain()
+
+
+# --------- تجربة النظام والمعرفة ----------
+
+@app.get("/experience/stats")
+@limiter.limit("60/minute")
+async def experience_stats(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    _auth(credentials)
+    return experience_engine.status()
+
+
+@app.get("/experience/knowledge")
+@limiter.limit("60/minute")
+async def experience_knowledge(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    _auth(credentials)
+    return knowledge_base.stats()
+
+
+@app.post("/experience/find")
+@limiter.limit("60/minute")
+async def experience_find(
+    req: ExperienceFindRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    _auth(credentials)
+    feat_dict = {k: float(v) for k, v in (req.features or {}).items()}
+    known = experience_engine.find_known_solution(captcha_type=req.captcha_type, features=feat_dict)
+    if not known:
+        return {"found": False}
+    return {"found": True, **known}
 
 
 # --------- لوحة التحكم ----------
