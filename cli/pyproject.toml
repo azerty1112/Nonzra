@@ -1,0 +1,13 @@
+{
+  "name": "nonecap-cli",
+  "version": "0.2.0",
+  "description": "CLI for NoneCap Clone CAPTCHA solver",
+  "entry_points": {
+    "console_scripts": [
+      "nonecap=nonecap_cli:main"
+    ]
+  },
+  "dependencies": [
+    "httpx>=0.24.0"
+  ]
+}

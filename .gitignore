@@ -1,0 +1,18 @@
+# مسارات للتجاهل في Git / النشر
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.DS_Build
+.env
+.venv/
+venv/
+.idea/
+.vscode/
+*.egg-info/
+dist/
+build/
+*.db
+*.sqlite
+node_modules/
+.cli-history

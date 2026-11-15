@@ -1,0 +1,32 @@
+{
+  "name": "nonecap-client",
+  "version": "0.4.0",
+  "description": "TypeScript client for NoneCap Clone CAPTCHA solver",
+  "main": "dist/client.js",
+  "module": "dist/client.mjs",
+  "types": "dist/client.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/client.mjs",
+      "require": "./dist/client.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "keywords": [
+    "captcha",
+    "solver",
+    "nonecap",
+    "hcaptcha",
+    "recaptcha"
+  ],
+  "license": "MIT"
+}
