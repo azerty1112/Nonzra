@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nonzra - منصة حل الكبتشا الذكية التلقائية</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/dashboard.css">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #0f172a;
+  --card: #1e293b;
+  --accent: #38bdf8;
+  --accent-dark: #0ea5e9;
+  --success: #22d3ee;
+  --danger: #f87171;
+  --warning: #fbbf24;
+  --muted: #64748b;
+  --border: #334155;
+  --text: #f1f5f9;
+}
+html, body { height: 100%; font-family: 'Cairo', sans-serif; background: var(--bg); color: var(--text); }
+body { display: flex; flex-direction: column; }
+
+/* Header */
+header { background: #0f172a; border-bottom: 1px solid var(--border); padding: 16px 24px; position: sticky; top: 0; z-index: 100; }
+.header-inner { max-width: 1200px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.logo { display: flex; align-items: center; gap: 12px; font-weight: 700; font-size: 1.25rem; color: var(--accent); }
+.logo-dot { width: 8px; height: 8px; background: var(--success); border-radius: 50%; animation: pulse 2s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+
+/* Layout */
+.main { flex: 1; max-width: 1200px; margin: 0 auto; padding: 24px; width: 100%; }
+
+/* Grid */
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-bottom: 24px; }
+
+/* Cards */
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+.card h3 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+.stat-value { font-size: 1.75rem; font-weight: 700; color: var(--text); margin-bottom: 4px; font-family: 'JetBrains Mono', monospace; }
+.stat-sub { font-size: 0.85rem; color: var(--muted); }
+
+/* Sections */
+.section { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 20px; }
+.section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.section-title { font-size: 1rem; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 8px; }
+.btn { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border); background: #334155; color: var(--text); font-family: 'Cairo', sans-serif; font-weight: 600; cursor: pointer; transition: all .2s; font-size: 0.9rem; }
+.btn:hover { background: #475569; border-color: var(--accent); }
+.btn-primary { background: var(--accent); color: #000; border-color: var(--accent); }
+.btn-primary:hover { background: var(--accent-dark); }
+.btn-success { background: var(--success); color: #000; border-color: var(--success); }
+.btn-danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+.btn-sm { padding: 6px 10px; font-size: 0.8rem; }
+.btn-outline { background: transparent; }
+
+/* Form groups */
+.form-group { margin-bottom: 14px; }
+.form-group label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 6px; }
+input, select, textarea { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid var(--border); background: #0f172a; color: var(--text); font-family: inherit; font-size: 0.9rem; }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+.file-input { padding: 6px; }
+
+/* Table */
+.table-wrap { overflow-x: auto; margin-top: 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+th, td { padding: 10px 12px; text-align: right; border-bottom: 1px solid var(--border); }
+th { background: #0f172a; color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; }
+tr:hover { background: #334155; }
+.badge { display: inline-block; padding: 4px 8px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; }
+.badge-ok { background: rgba(34,211,238,.15); color: var(--success); border: 1px solid rgba(34,211,238,.3); }
+.badge-bad { background: rgba(248,113,113,.15); color: var(--danger); border: 1px solid rgba(248,113,113,.3); }
+.badge-wait { background: rgba(251,191,36,.15); color: var(--warning); border: 1px solid rgba(251,191,36,.3); }
+
+/* Logs */
+.logs { height: 260px; overflow-y: auto; background: #020617; border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: #94a3b8; }
+.log-line { margin-bottom: 8px; border-left: 3px solid var(--border); padding-right: 8px; }
+.log-line.ok { border-left-color: var(--success); color: var(--success); }
+.log-line.bad { border-left-color: var(--danger); color: var(--danger); }
+.log-line.warn { border-left-color: var(--warning); color: var(--warning); }
+.log-time { color: var(--muted); margin-left: 6px; }
+
+/* Modal */
+.modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 1000; align-items: center; justify-content: center; }
+.modal.show { display: flex; }
+.modal-content { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 24px; width: 90%; max-width: 480px; max-height: 90vh; overflow-y: auto; }
+.modal h3 { margin-bottom: 16px; color: var(--text); }
+
+/* Status pills */
+.status-indicator { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); }
+.dot.ok { background: var(--success); box-shadow: 0 0 8px var(--success); }
+.dot.warn { background: var(--warning); box-shadow: 0 0 8px var(--warning); }
+
+/* Toggle */
+.switch { position: relative; display: inline-block; width: 44px; height: 24px; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider { position: absolute; inset: 0; background: #475569; border-radius: 24px; transition: .2s; cursor: pointer; }
+.slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background: white; border-radius: 50%; transition: .2s; }
+input:checked + .slider { background: var(--accent); }
+input:checked + .slider:before { transform: translateX(20px); }
+
+/* Responsive */
+@media (max-width: 768px) { .main { padding: 12px; } .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="header-inner">
+    <div class="logo"><div class="logo-dot"></div><span>Nonzra</span> <span style="color:var(--muted);font-weight:400;font-size:0.85rem">解 الكبتشا التلقائي</span></div>
+    <div class="status-indicator" id="serverStatus"><div class="dot" id="statusDot"></div><span id="statusText">جاري التحقق...</span></div>
+  </div>
+</header>
+
+<div class="main">
+  <!-- Stats -->
+  <div class="grid">
+    <div class="card">
+      <h3>الإجمالي المحلولة</h3>
+      <div class="stat-value" id="statTotal">0</div>
+      <div class="stat-sub">محاولة</div>
+    </div>
+    <div class="card">
+      <h3>معدل النجاح</h3>
+      <div class="stat-value" id="statRate">0%</div>
+      <div class="stat-sub">متوسط النجاح</div>
+    </div>
+    <div class="card">
+      <h3>الزمن المتوسط</h3>
+      <div class="stat-value" id="statAvg">0ms</div>
+      <div class="stat-sub">وقت الاستجابة</div>
+    </div>
+    <div class="card">
+      <h3>العامل الذكي</h3>
+      <div class="stat-value" id="statWorker">متوقف</div>
+      <div class="stat-sub">Auto Worker</div>
+    </div>
+  </div>
+
+  <!-- حل سريع -->
+  <section class="section">
+    <div class="section-header"><h2 class="section-title">حل سريع تلقائي</h2><button class="btn btn-primary" onclick="startWorker()">تشغيل العامل</button></div>
+    <div style="display:grid;grid-template-columns:1fr;gap:16px;align-items:flex-start">
+      <div class="form-group">
+        <label>ملف الكبتشا (صورة / لغز / قالب)</label>
+        <input type="file" id="captchaFile" accept="image/*">
+      </div>
+      <div class="form-group">
+        <label>نوع الكبتشا (اترك فارغًا للكشف التلقائي)</label>
+        <input type="text" id="captchaType" placeholder="image, hcaptcha, turnstile...">
+      </div>
+      <div class="form-group">
+        <label>رابط موقع (لـ hCaptcha / Turnstile)</label>
+        <input type="text" id="captchaUrl" placeholder="https://example.com">
+      </div>
+      <div class="form-group">
+        <label>Sitekey</label>
+        <input type="text" id="captchaSitekey">
+      </div>
+      <div style="display:flex;gap:10px">
+        <label style="margin:0;display:flex;align-items:center;gap:6px"><input type="checkbox" id="humanLike" checked> سلوك بشري</label>
+        <label style="margin:0;display:flex;align-items:center;gap:6px"><input type="checkbox" id="autoMode" checked> وضع تلقائي كامل</label>
+      </div>
+      <button class="btn btn-success btn-primary" onclick="solveAuto()">بدء الحل التلقائي</button>
+      <div id="autoResult" style="margin-top:14px;padding:14px;border:1px solid var(--border);border-radius:8px;background:#0f172a;display:none"></div>
+    </div>
+  </section>
+
+  <!-- تاريخ المهام -->
+  <section class="section">
+    <div class="section-header"><h2 class="section-title">تاريخ المهام والحلول</h2><button class="btn btn-outline" onclick="loadHistory()">تحديث</button></div>
+    <div class="table-wrap">
+      <table id="historyTable">
+        <thead><tr><th>الوقت</th><th>النوع</th><th>النتيجة</th><th>الثقة</th><th>الزمن</th><th>الاستراتيجية</th><th>الحالة</th></tr></thead>
+        <tbody id="historyBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- سجل حي -->
+  <section class="section">
+    <div class="section-header"><h2 class="section-title">السجل الحي للذكاء الاصطناعي</h2><button class="btn btn-outline" onclick="clearLogs()">مسح السجل</button></div>
+    <div class="logs" id="logs">بدء المراقبة...</div>
+  </section>
+
+  <!-- مفاتيح API -->
+  <section class="section">
+    <div class="section-header"><h2 class="section-title">إدارة مفاتيح API</h2><button class="btn btn-primary" onclick="openKeyModal()">إنشاء مفتاح جديد</button></div>
+    <div class="table-wrap">
+      <table id="keysTable">
+        <thead><tr><th>المفتاح</th><th>الاسم</th><th>الحالة</th><th>الاستخدام</th><th>الإجراء</th></tr></thead>
+        <tbody id="keysBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- تدريب ذاتي -->
+  <section class="section">
+    <div class="section-header"><h2 class="section-title">التعلم الذاتي والتدريب</h2></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
+      <div class="card" style="padding:12px"><div style="font-size:.75rem;color:var(--muted);margin-bottom:6px">عينات مؤكدة</div><div class="stat-value" style="font-size:1.2rem" id="trainConfirmed">0</div></div>
+      <div class="card" style="padding:12px"><div style="font-size:.75rem;color:var(--muted);margin-bottom:6px">معدل التأكيد</div><div class="stat-value" style="font-size:1.2rem" id="trainRate">0%</div></div>
+      <div class="card" style="padding:12px"><div style="font-size:.75rem;color:var(--muted);margin-bottom:6px">الحد الأدنى للثقة</div><div class="stat-value" style="font-size:1.2rem" id="trainThreshold">0.90</div></div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:12px">
+      <button class="btn btn-primary" onclick="retrainModel()">إعادة تدريب النموذج</button>
+      <button class="btn btn-outline" onclick="loadTrainingStats()">إحصائيات التدريب</button>
+    </div>
+    <div id="trainResult" style="margin-top:10px;padding:10px;border:1px solid var(--border);border-radius:8px;background:#0f172a;display:none"></div>
+  </section>
+</div>
+
+<!-- modal مفتاح API -->
+<div class="modal" id="keyModal">
+  <div class="modal-content">
+    <h3>إنشاء مفتاح API جديد</h3>
+    <div class="form-group"><label>اسم المفتاح (اختياري)</label><input type="text" id="keyName" placeholder="مفتاح التطبيق"></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">
+      <button class="btn btn-outline" onclick="closeKeyModal()">إلغاء</button>
+      <button class="btn btn-primary" onclick="createKey()">إنشاء وعرض المفتاح</button>
+    </div>
+    <div id="keyResult" style="margin-top:12px;padding:10px;background:#0f172a;border:1px solid var(--border);border-radius:8px;word-break:break-all;display:none;font-family:JetBrains Mono;font-size:.8rem"></div>
+  </div>
+</div>
+
+<script src="/static/js/dashboard.js"></script>
+</body>
+</html>

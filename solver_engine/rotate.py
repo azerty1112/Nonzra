@@ -93,27 +93,30 @@ class RotateSolver(BaseSolver):
             # 2) بلا قالب: تباين المسقط العمودي أقصى عندما يكون النص أفقيًا
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             base_var = _projection_variance(_rotate(gray, 0.0)) + 1e-6
-            best_angle = 0.0
+            best_angle_no_tmpl: float = 0.0
             best_var = -1.0
             for a in range(-90, 91, max(1, int(coarse_step))):
                 var = _projection_variance(_rotate(gray, float(a)))
                 if var > best_var:
                     best_var = var
-                    best_angle = float(a)
+                    best_angle_no_tmpl = float(a)
             # تنقيح بدقة 1 درجة
-            for a in np.arange(best_angle - coarse_step, best_angle + coarse_step + 0.5, 1.0):
-                var = _projection_variance(_rotate(gray, float(a)))
+            start = int(best_angle_no_tmpl - coarse_step)
+            end = int(best_angle_no_tmpl + coarse_step) + 1
+            for step in range(start, end):
+                angle_val = float(step)
+                var = _projection_variance(_rotate(gray, angle_val))
                 if var > best_var:
                     best_var = var
-                    best_angle = float(a)
+                    best_angle_no_tmpl = angle_val
             confidence = min(1.0, best_var / base_var)
             return SolverResult(
                 success=True,
                 captcha_type=self.captcha_type,
-                text=f"{best_angle:.1f}",
+                text=f"{best_angle_no_tmpl:.1f}",
                 confidence=confidence,
                 response_time_ms=int((time.time() - start) * 1000),
-                metadata={"angle": best_angle, "variance": best_var, "method": "projection"},
+                metadata={"angle": best_angle_no_tmpl, "variance": best_var, "method": "projection"},
             )
         except Exception as exc:  # noqa: BLE001
             return SolverResult(

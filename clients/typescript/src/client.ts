@@ -321,6 +321,86 @@ export class NoneCap {
     return (await resp.json()) as Record<string, unknown>;
   }
 
+  async createApiKey(options: { name?: string } = {}): Promise<Record<string, unknown>> {
+    const resp = await this.request("/api/keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(options),
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      throw new Error(`NoneCap error ${resp.status}: ${text}`);
+    }
+    return (await resp.json()) as Record<string, unknown>;
+  }
+
+  async listApiKeys(): Promise<Record<string, unknown>[]> {
+    const resp = await this.request("/api/keys", { method: "GET" });
+    if (!resp.ok) throw new Error(`List keys failed ${resp.status}`);
+    return (await resp.json()) as Record<string, unknown>[];
+  }
+
+  async deleteApiKey(keyId: string): Promise<Record<string, unknown>> {
+    const resp = await this.request(`/api/keys/${keyId}`, { method: "DELETE" });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      throw new Error(`NoneCap error ${resp.status}: ${text}`);
+    }
+    return (await resp.json()) as Record<string, unknown>;
+  }
+
+  async bulkAuto(
+    items: Array<Record<string, unknown>>,
+    callbackUrl?: string
+  ): Promise<Record<string, unknown>> {
+    const payload: Record<string, unknown> = { items };
+    if (callbackUrl) payload.callbackUrl = callbackUrl;
+    const resp = await this.request("/bulk/auto", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      throw new Error(`NoneCap error ${resp.status}: ${text}`);
+    }
+    return (await resp.json()) as Record<string, unknown>;
+  }
+
+  async bulkStatus(bulkId: string): Promise<Record<string, unknown>> {
+    const resp = await this.request(`/bulk/${bulkId}`, { method: "GET" });
+    if (!resp.ok) throw new Error(`Bulk status failed ${resp.status}`);
+    return (await resp.json()) as Record<string, unknown>;
+  }
+
+  async selfImproveStats(): Promise<Record<string, unknown>> {
+    const resp = await this.request("/self-improve/stats", { method: "GET" });
+    if (!resp.ok) throw new Error(`Self improve stats failed ${resp.status}`);
+    return (await resp.json()) as Record<string, unknown>;
+  }
+
+  async selfImproveConfirm(sampleId: string, text?: string): Promise<Record<string, unknown>> {
+    const resp = await this.request(`/self-improve/confirm/${sampleId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(text ? { text } : {}),
+    });
+    if (!resp.ok) {
+      const textErr = await resp.text().catch(() => "");
+      throw new Error(`NoneCap error ${resp.status}: ${textErr}`);
+    }
+    return (await resp.json()) as Record<string, unknown>;
+  }
+
+  async selfImproveRetrain(): Promise<Record<string, unknown>> {
+    const resp = await this.request("/self-improve/retrain", { method: "POST" });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      throw new Error(`NoneCap error ${resp.status}: ${text}`);
+    }
+    return (await resp.json()) as Record<string, unknown>;
+  }
+
   async health(): Promise<Record<string, unknown>> {
     const resp = await this.request("/health", { method: "GET" });
     if (!resp.ok) throw new Error(`Health check failed ${resp.status}`);

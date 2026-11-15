@@ -487,6 +487,67 @@ class NoneCap:
         resp.raise_for_status()
         return resp.json()
 
+    # --------- مفاتيح API ----------
+
+    def create_api_key(self, name: Optional[str] = None) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {}
+        if name:
+            payload["name"] = name
+        resp = self._client.post(f"{self.base_url}/api/keys", json=payload, headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    def list_api_keys(self) -> list:
+        resp = self._client.get(f"{self.base_url}/api/keys", headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    def delete_api_key(self, key_id: str) -> Dict[str, Any]:
+        resp = self._client.delete(f"{self.base_url}/api/keys/{key_id}", headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    # --------- الحل الجماعي ----------
+
+    def bulk_auto(
+        self,
+        items: list,
+        callback_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"items": items}
+        if callback_url:
+            payload["callback_url"] = callback_url
+        resp = self._client.post(f"{self.base_url}/bulk/auto", json=payload, headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    def bulk_status(self, bulk_id: str) -> Dict[str, Any]:
+        resp = self._client.get(f"{self.base_url}/bulk/{bulk_id}", headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    # --------- التدريب الذاتي ----------
+
+    def self_improve_stats(self) -> Dict[str, Any]:
+        resp = self._client.get(f"{self.base_url}/self-improve/stats", headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
+    def self_improve_confirm(self, sample_id: str, text: Optional[str] = None) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {}
+        if text is not None:
+            payload["text"] = text
+        resp = self._client.post(
+            f"{self.base_url}/self-improve/confirm/{sample_id}", json=payload, headers=self._headers()
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def self_improve_retrain(self) -> Dict[str, Any]:
+        resp = self._client.post(f"{self.base_url}/self-improve/retrain", headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
     def stats(self) -> Dict[str, Any]:
         resp = self._client.get(f"{self.base_url}/stats", headers=self._headers())
         resp.raise_for_status()

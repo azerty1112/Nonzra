@@ -224,6 +224,69 @@ def cmd_auto_status(args: argparse.Namespace) -> int:
             return 1
 
 
+def cmd_create_key(args: argparse.Namespace) -> int:
+    with _client(args.base_url, args.timeout, args.api_key) as c:
+        data = {}
+        if args.name:
+            data["name"] = args.name
+        try:
+            r = c.post("/api/keys", json=data)
+            r.raise_for_status()
+            print(json.dumps(r.json(), ensure_ascii=False, indent=2))
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            print(f"خطأ: {exc}", file=sys.stderr)
+            return 1
+
+
+def cmd_list_keys(args: argparse.Namespace) -> int:
+    with _client(args.base_url, args.timeout, args.api_key) as c:
+        try:
+            r = c.get("/api/keys")
+            r.raise_for_status()
+            print(json.dumps(r.json(), ensure_ascii=False, indent=2))
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            print(f"خطأ: {exc}", file=sys.stderr)
+            return 1
+
+
+def cmd_delete_key(args: argparse.Namespace) -> int:
+    with _client(args.base_url, args.timeout, args.api_key) as c:
+        try:
+            r = c.delete(f"/api/keys/{args.key_id}")
+            r.raise_for_status()
+            print(json.dumps(r.json(), ensure_ascii=False, indent=2))
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            print(f"خطأ: {exc}", file=sys.stderr)
+            return 1
+
+
+def cmd_self_improve_stats(args: argparse.Namespace) -> int:
+    with _client(args.base_url, args.timeout, args.api_key) as c:
+        try:
+            r = c.get("/self-improve/stats")
+            r.raise_for_status()
+            print(json.dumps(r.json(), ensure_ascii=False, indent=2))
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            print(f"خطأ: {exc}", file=sys.stderr)
+            return 1
+
+
+def cmd_self_improve_retrain(args: argparse.Namespace) -> int:
+    with _client(args.base_url, args.timeout, args.api_key) as c:
+        try:
+            r = c.post("/self-improve/retrain")
+            r.raise_for_status()
+            print(json.dumps(r.json(), ensure_ascii=False, indent=2))
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            print(f"خطأ: {exc}", file=sys.stderr)
+            return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="nonecap", description="CLI لسيرفر NoneCap Clone")
     p.add_argument("--base-url", default="http://localhost:8000", help="رابط السيرفر")
@@ -294,6 +357,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("auto-status", help="حالة العامل والتعلّم والضبط")
     sp.set_defaults(func=cmd_auto_status)
+
+    sp = sub.add_parser("create-key", help="إنشاء مفتاح API جديد")
+    sp.add_argument("--name", default=None)
+    sp.set_defaults(func=cmd_create_key)
+
+    sp = sub.add_parser("list-keys", help="قائمة مفاتيح API")
+    sp.set_defaults(func=cmd_list_keys)
+
+    sp = sub.add_parser("delete-key", help="إلغاء مفتاح API")
+    sp.add_argument("key_id")
+    sp.set_defaults(func=cmd_delete_key)
+
+    sp = sub.add_parser("self-improve-stats", help="إحصائيات التعلم الذاتي")
+    sp.set_defaults(func=cmd_self_improve_stats)
+
+    sp = sub.add_parser("self-improve-retrain", help="إعادة تدريب النموذج الذاتي")
+    sp.set_defaults(func=cmd_self_improve_retrain)
 
     return p
 

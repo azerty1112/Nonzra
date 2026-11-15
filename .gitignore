@@ -14,5 +14,7 @@ dist/
 build/
 *.db
 *.sqlite
+api_keys.json
+training_data.json
 node_modules/
 .cli-history

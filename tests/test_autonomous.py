@@ -1,17 +1,25 @@
 """اختبارات الطبقة الذاتية: الكشف، الضبط، التعلّم، المنسّق، والعامل الخلفي."""
 
 import asyncio
+import os
+import tempfile
+import time
 
 import numpy as np
 import cv2
+from fastapi.testclient import TestClient
 
 from intelligence.detector import AutoDetector
 from intelligence.tuner import AdaptiveTuner
 from intelligence.learning import LearningEngine
 from intelligence.orchestrator import AutoOrchestrator
+from intelligence.self_improver import SelfImprover
+from intelligence.training import CaptchaDataset
 from intelligence.worker import AutoWorker
 from solver_engine.base import BaseSolver, CaptchaType, SolverResult
 from solver_engine.registry import SolverRegistry
+
+import api_server.main as main_mod
 
 
 class FakeSolver(BaseSolver):
@@ -200,3 +208,134 @@ def test_feedback_endpoint():
     data = resp.json()
     assert data["ok"] is True
     assert "reward" in data
+
+
+def test_api_keys_crud():
+    client = TestClient(main_mod.app)
+    # إنشاء مفتاح
+    resp = client.post("/api/keys", json={"name": "test-key"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "api_key" in data
+    assert "key_id" in data
+    key_id = data["key_id"]
+
+    # قائمة المفاتيح
+    resp = client.get("/api/keys")
+    assert resp.status_code == 200
+    keys = resp.json()
+    assert any(k["key_id"] == key_id for k in keys)
+
+    # إلغاء المفتاح
+    resp = client.delete(f"/api/keys/{key_id}")
+    assert resp.status_code == 200
+
+
+def test_self_improve_stats():
+    client = TestClient(main_mod.app)
+    resp = client.get("/self-improve/stats")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "dataset" in data
+
+
+def test_self_improve_retrain():
+    client = TestClient(main_mod.app)
+    resp = client.post("/self-improve/retrain")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "retrained" in data
+
+
+def test_worker_auto_scale():
+    orch = AutoOrchestrator(
+        registry=_fake_registry(confidence=0.99),
+        learner=LearningEngine(epsilon=0.0, seed=0),
+        tuner=AdaptiveTuner(epsilon=0.0, seed=0),
+    )
+    worker = AutoWorker(orchestrator=orch, concurrency=1, max_concurrency=4)
+
+    async def run() -> None:
+        await worker.start()
+        # إرسال مهام كثيرة لتحفيز التوسيع
+        for _ in range(10):
+            worker.submit({"captcha_type": "image"})
+        await asyncio.sleep(0.3)
+        await worker.stop()
+
+    asyncio.run(run())
+    snap = worker.snapshot()
+    assert snap["processed"] >= 0
+    assert snap["concurrency"] >= 1
+
+
+def test_bulk_submit_and_status():
+    orig_registry = main_mod.orchestrator.registry
+    main_mod.orchestrator.registry = _fake_registry(confidence=0.99)
+    try:
+        with TestClient(main_mod.app) as client:
+            resp = client.post(
+                "/bulk/auto",
+                json={
+                    "items": [
+                        {"captcha_type": "image"},
+                        {"captcha_type": "image"},
+                    ]
+                },
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["count"] == 2
+            assert len(data["job_ids"]) == 2
+            bulk_id = data["bulk_id"]
+
+            # انتظار الإكمال
+            for _ in range(100):
+                st = client.get(f"/bulk/{bulk_id}").json()
+                if st.get("completed", 0) + st.get("failed", 0) >= 2:
+                    break
+                time.sleep(0.05)
+            assert st.get("completed", 0) + st.get("failed", 0) >= 2
+    finally:
+        main_mod.orchestrator.registry = orig_registry
+
+
+def test_dashboard_endpoint():
+    client = TestClient(main_mod.app)
+    resp = client.get("/web")
+    assert resp.status_code == 200
+    assert "Nonzra" in resp.text or "لوحة" in resp.text
+
+
+def test_training_dataset():
+    from intelligence.training import CaptchaDataset
+    import tempfile, os
+
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+        path = f.name
+    try:
+        ds = CaptchaDataset(path=path)
+        sid = ds.add("image", text="ABC", confidence=0.95, confirmed=True)
+        assert ds.confirm(sid)
+        stats = ds.stats()
+        assert stats["confirmed"] >= 1
+    finally:
+        os.unlink(path)
+
+
+def test_self_improver_auto_confirm():
+    from intelligence.self_improver import SelfImprover
+    from intelligence.training import CaptchaDataset
+    import tempfile, os
+
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+        path = f.name
+    try:
+        ds = CaptchaDataset(path=path)
+        si = SelfImprover(dataset=ds, retrain_confidence_threshold=0.5, retrain_min_new_samples=1)
+        confirmed = si.auto_confirm("job1", "image", None, "TEXT", 0.99)
+        assert confirmed is True
+        stats = si.stats()
+        assert stats["auto_confirmed"] >= 1
+    finally:
+        os.unlink(path)

@@ -9,9 +9,11 @@ from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException, WebSocket, WebSocketDisconnect, Depends, Query
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
+import httpx
 
 from intelligence import (
     SolveEvent,
@@ -26,6 +28,18 @@ from intelligence import (
     AutoOrchestrator,
     AutoWorker,
 )
+
+from api_server.auth import (
+    api_key_store,
+    hash_api_key,
+    generate_api_key,
+    extract_api_key,
+    ApiKeyStore,
+)
+from api_server.webhooks import webhook_deliverer
+
+from intelligence.training import CaptchaDataset
+from intelligence.self_improver import SelfImprover
 
 try:
     from slowapi import Limiter
@@ -115,6 +129,10 @@ orchestrator = AutoOrchestrator(
 )
 worker = AutoWorker(orchestrator=orchestrator, concurrency=2)
 
+# --------- التحسين الذاتي ----------
+training_dataset = CaptchaDataset()
+self_improver = SelfImprover(dataset=training_dataset)
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -127,6 +145,14 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="NoneCap Clone API", version="0.4.0", lifespan=lifespan)
 app.state.limiter = limiter
+
+# خدمة الملفات الثابتة للوحة الويب
+app.mount("/static", StaticFiles(directory="web/static"), name="static")
+
+
+@app.get("/web", response_class=HTMLResponse)
+async def web_dashboard() -> Any:
+    return FileResponse("web/templates/dashboard.html")
 
 # مهام غير متزامنة قيد ejecución
 JOBS: Dict[str, Dict[str, Any]] = {}
@@ -154,6 +180,7 @@ class BaseSolveRequest(BaseModel):
     resize_width: int = 400
     threshold: str = "otsu"
     human_like: bool = False
+    callback_url: Optional[str] = None
 
 
 class SolveResponse(BaseModel):
@@ -180,6 +207,7 @@ async def _run_job(
     kwargs: Dict[str, Any],
     decision: Optional[SolveDecision] = None,
 ) -> None:
+    callback_url = kwargs.pop("callback_url", None)
     JOBS[job_id]["status"] = "processing"
     await _publish(job_id, {"job_id": job_id, "status": "processing"})
     try:
@@ -222,6 +250,30 @@ async def _run_job(
                 "alerts": [a.__dict__ for a in new_alerts],
             },
         )
+        if result.success and result.confidence >= self_improver.retrain_confidence_threshold:
+            image_b64 = None
+            image_bytes = kwargs.get("image_bytes")
+            if image_bytes is not None:
+                import base64
+
+                image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+            self_improver.auto_confirm(
+                job_id=job_id,
+                captcha_type=captcha_type.value,
+                image_b64=image_b64,
+                text=result.text or result.token,
+                confidence=result.confidence,
+            )
+        if callback_url:
+            await webhook_deliverer.deliver(
+                callback_url,
+                webhook_deliverer.build_payload(
+                    job_id=job_id,
+                    status=JOBS[job_id]["status"],
+                    result=result.to_dict(),
+                    finished_at=JOBS[job_id].get("finished_at"),
+                ),
+            )
     except Exception as exc:  # noqa: BLE001
         JOBS[job_id]["status"] = "failed"
         JOBS[job_id]["error"] = str(exc)
@@ -238,6 +290,16 @@ async def _run_job(
         )
         monitor.record(event)
         await _publish(job_id, {"job_id": job_id, "status": "failed", "error": str(exc)})
+        if callback_url:
+            await webhook_deliverer.deliver(
+                callback_url,
+                webhook_deliverer.build_payload(
+                    job_id=job_id,
+                    status="failed",
+                    error=str(exc),
+                    finished_at=JOBS[job_id].get("finished_at"),
+                ),
+            )
 
 
 def _decode_b64(value: Optional[str]) -> Optional[bytes]:
@@ -657,6 +719,187 @@ async def feedback(
     return {"ok": True, "reward": round(reward, 3), "learning": learner.snapshot()}
 
 
+# --------- مفاتيح API ----------
+
+class CreateKeyRequest(BaseModel):
+    name: Optional[str] = None
+
+
+class CreateKeyResponse(BaseModel):
+    key_id: str
+    api_key: str
+    key_hash_prefix: str
+    name: Optional[str] = None
+
+
+class KeyInfo(BaseModel):
+    key_id: str
+    name: str
+    is_active: bool
+    created_at: Optional[float] = None
+    usage_count: int = 0
+    key_hash_prefix: str = ""
+
+
+@app.post("/api/keys", response_model=CreateKeyResponse)
+@limiter.limit("20/minute")
+async def create_api_key(
+    req: CreateKeyRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> CreateKeyResponse:
+    _auth(credentials)
+    key_id = str(uuid.uuid4())
+    raw_key = generate_api_key()
+    api_key_store.add(key_id, hash_api_key(raw_key), req.name)
+    return CreateKeyResponse(
+        key_id=key_id,
+        api_key=raw_key,
+        key_hash_prefix=hash_api_key(raw_key)[:8],
+        name=req.name,
+    )
+
+
+@app.get("/api/keys", response_model=list)
+@limiter.limit("60/minute")
+async def list_api_keys(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> list:
+    _auth(credentials)
+    return api_key_store.list_keys()
+
+
+@app.delete("/api/keys/{key_id}")
+@limiter.limit("30/minute")
+async def delete_api_key(
+    key_id: str,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    _auth(credentials)
+    ok = api_key_store.deactivate(key_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="المفتاح غير موجود")
+    return {"ok": True}
+
+
+# --------- الحل الجماعي ----------
+
+class BulkItem(BaseModel):
+    captcha_type: str
+    sitekey: Optional[str] = None
+    url: Optional[str] = None
+    action: Optional[str] = None
+    cdata: Optional[str] = None
+    image_b64: Optional[str] = None
+    template_b64: Optional[str] = None
+    human_like: bool = False
+    max_escalations: int = 2
+    callback_url: Optional[str] = None
+
+
+class BulkSubmitRequest(BaseModel):
+    items: list[BulkItem]
+    callback_url: Optional[str] = None
+
+
+class BulkSubmitResponse(BaseModel):
+    bulk_id: str
+    job_ids: list
+    count: int
+
+
+BULK_JOBS: Dict[str, Dict[str, Any]] = {}
+
+
+@app.post("/bulk/auto", response_model=BulkSubmitResponse)
+@limiter.limit("10/minute")
+async def bulk_auto(
+    req: BulkSubmitRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> BulkSubmitResponse:
+    _auth(credentials)
+    bulk_id = str(uuid.uuid4())
+    job_ids: list = []
+    for item in req.items:
+        payload = {
+            "captcha_type": item.captcha_type,
+            "sitekey": item.sitekey,
+            "url": item.url,
+            "action": item.action,
+            "cdata": item.cdata,
+            "image_bytes": _decode_b64(item.image_b64),
+            "template_bytes": _decode_b64(item.template_b64),
+            "human_like": item.human_like,
+            "max_escalations": item.max_escalations,
+            "callback_url": item.callback_url or req.callback_url,
+        }
+        payload = {k: v for k, v in payload.items() if v is not None}
+        job_id = worker.submit(payload)
+        job_ids.append(job_id)
+    BULK_JOBS[bulk_id] = {
+        "bulk_id": bulk_id,
+        "job_ids": job_ids,
+        "count": len(job_ids),
+        "created_at": _now(),
+    }
+    return BulkSubmitResponse(bulk_id=bulk_id, job_ids=job_ids, count=len(job_ids))
+
+
+@app.get("/bulk/{bulk_id}")
+@limiter.limit("60/minute")
+async def bulk_status(
+    bulk_id: str,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    _auth(credentials)
+    bulk = BULK_JOBS.get(bulk_id)
+    if not bulk:
+        raise HTTPException(status_code=404, detail="المهمة الجماعية غير موجودة")
+    job_statuses = []
+    for jid in bulk["job_ids"]:
+        st = worker.status(jid) or {"job_id": jid, "status": "unknown"}
+        job_statuses.append(st)
+    completed = sum(1 for s in job_statuses if s.get("status") == "completed")
+    failed = sum(1 for s in job_statuses if s.get("status") == "failed")
+    bulk["completed"] = completed
+    bulk["failed"] = failed
+    bulk["jobs"] = job_statuses
+    return bulk
+
+
+# --------- التحسين الذاتي ----------
+
+@app.get("/self-improve/stats")
+@limiter.limit("60/minute")
+async def self_improve_stats(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    _auth(credentials)
+    return self_improver.stats()
+
+
+@app.post("/self-improve/confirm/{sample_id}")
+@limiter.limit("60/minute")
+async def self_improve_confirm(
+    sample_id: str,
+    text: Optional[str] = None,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    _auth(credentials)
+    ok = self_improver.confirm(sample_id, text)
+    if not ok:
+        raise HTTPException(status_code=404, detail="العينات غير موجودة")
+    return {"ok": True}
+
+
+@app.post("/self-improve/retrain")
+@limiter.limit("10/minute")
+async def self_improve_retrain(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    _auth(credentials)
+    return self_improver.maybe_retrain()
+
+
 # --------- لوحة التحكم ----------
 DASHBOARD_HTML = """
 <!DOCTYPE html>
@@ -760,8 +1003,18 @@ async def metrics() -> Response:
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-def _auth(credentials: Optional[HTTPAuthorizationCredentials]) -> None:
-    # السماح بالتجريب بدون مفتاح محلياً؛ في الإنتاج يُفضل تفعيل التحقق
-    if credentials is None:
-        return
-    # قبول أي مفتاح كإثبات أولي، يمكن ربطه بقاعدة بيانات api_keys لاحقًا
+def _auth(
+    credentials: Optional[HTTPAuthorizationCredentials],
+    x_api_key: Optional[str] = None,
+    api_key_query: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    api_key = extract_api_key(credentials, x_api_key, api_key_query)
+    if not api_key:
+        return None  # التجريب محلياً دون مفتاح
+    info = api_key_store.validate(api_key)
+    if not info:
+        raise HTTPException(status_code=401, detail="مفتاح API غير صالح")
+    if api_key_store.is_rate_limited(info["key_id"]):
+        raise HTTPException(status_code=429, detail="تم تجاوز الحد المسموح للمفتاح")
+    api_key_store.record_usage(info["key_id"])
+    return info
