@@ -1,9 +1,11 @@
-"""الكشف التلقائي لنوع الكبتشا من الصورة (ذكاء التصنيف)."""
+"""الكشف التلقائي لنوع الكبتشا من الصورة (ذكاء التصنيف) باستخدام قاعدة المعرفة الشاملة."""
 
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 import numpy as np
 import cv2
+
+from intelligence.captcha_knowledge import CAPTCHA_TYPES, list_types
 
 
 @dataclass
@@ -15,7 +17,7 @@ class Detection:
 
 
 class AutoDetector:
-    """يصنّف نوع الكبتشا تلقائيًا من خصائص الصورة دون تدخل بشري."""
+    """يصنّف نوع الكبتشا تلقائيًا من خصائص الصورة وقواعد المعرفة الشاملة."""
 
     def detect(self, image: Any) -> Detection:
         if image is None or not isinstance(image, np.ndarray) or image.size == 0:
@@ -49,7 +51,6 @@ class AutoDetector:
             ys = [float(b[1]) for b in boxes]
             avg_w = sum(widths) / count
             avg_h = sum(heights) / count
-            # مدى محاذاة أفقي (نص عادةً محاذى)
             mean_y = sum(ys) / count
             y_std = (sum((y - mean_y) ** 2 for y in ys) / count) ** 0.5
             x_spread = (max(xs) - min(xs)) / max(1.0, float(w))
@@ -73,27 +74,67 @@ class AutoDetector:
             "aspect": float(w / h) if h else 1.0,
         }
 
-        # قرار التصنيف
-        scores: Dict[str, float] = {
-            "image": 0.2,
-            "point": 0.0,
-            "drag": 0.0,
-            "grid": 0.0,
-        }
+        # تقييم كل نوع باستخدام قواعده من قاعدة المعرفة
+        scores: Dict[str, float] = {}
+        for type_id in list_types():
+            info = CAPTCHA_TYPES[type_id]
+            score = 0.0
+            rules = info.detection_rules
 
-        # نص: مكوّنات صغيرة كثيرة محاذاة أفقيًا على صورة عريضة
-        if 3 <= count <= 25 and 6 <= avg_h <= 70 and x_spread > 0.35 and y_std < h * 0.25:
-            scores["image"] += 0.6
-        # نقطة/لون: تشبع لوني عالٍ مع بقع قليلة كبيرة
-        if saturation > 0.25 and hue_variety > 0.2 and count <= 8:
-            scores["point"] += 0.65
-        # شبكة صور: صورة مربعة تقريباً مع بقع متعددة كبيرة نسبياً
-        if count >= 6 and 0.7 <= (w / h if h else 1.0) <= 1.4 and avg_w > 30 and avg_h > 30:
-            scores["grid"] += 0.55
-        # drag: منطقة كبيرة + قطعة صغيرة (نسبة حجم منخفضة، مكونات قليلة)
-        if count <= 4 and size_ratio < 0.5 and avg_w > 20 and avg_h > 20:
-            scores["drag"] += 0.5
-            scores["point"] += 0.1
+            # عدد المكونات
+            if "component_count" in rules:
+                lo, hi = rules["component_count"]
+                if lo <= count <= hi:
+                    score += 0.25
+            if "component_count_max" in rules and count <= rules["component_count_max"]:
+                score += 0.15
+            if "component_count_min" in rules and count >= rules["component_count_min"]:
+                score += 0.15
+
+            # متوسط الارتفاع
+            if "avg_h" in rules:
+                lo, hi = rules["avg_h"]
+                if lo <= avg_h <= hi:
+                    score += 0.2
+            if "avg_h_min" in rules and avg_h >= rules["avg_h_min"]:
+                score += 0.1
+
+            # متوسط العرض
+            if "avg_w_min" in rules and avg_w >= rules["avg_w_min"]:
+                score += 0.1
+
+            # الانتشار الأفقي (نص محاذى)
+            if "x_spread" in rules:
+                lo, hi = rules["x_spread"]
+                if lo <= x_spread <= hi:
+                    score += 0.2
+
+            # انحراف y المحوري
+            if "y_std_max_ratio" in rules and y_std < h * rules["y_std_max_ratio"]:
+                score += 0.15
+
+            # نسبة الحجم (drag)
+            if "size_ratio_max" in rules and size_ratio <= rules["size_ratio_max"]:
+                score += 0.2
+
+            # نسبة العرض إلى الارتفاع (grid)
+            if "aspect_ratio_range" in rules:
+                lo, hi = rules["aspect_ratio_range"]
+                aspect = features["aspect"]
+                if lo <= aspect <= hi:
+                    score += 0.2
+
+            # التشبع (point/lون)
+            if "saturation_min" in rules and saturation >= rules["saturation_min"]:
+                score += 0.25
+            if "saturation_max" in rules and saturation <= rules["saturation_max"]:
+                score += 0.1
+
+            scores[type_id] = score
+
+        # إذا لم يسجل أي نوع نقاط، نعطي image أولوية افتراضية
+        if not scores or max(scores.values()) <= 0:
+            scores["image"] = 0.2
 
         best_type = max(scores, key=lambda k: scores[k])
         best_score = scores[best_type]

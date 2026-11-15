@@ -89,6 +89,32 @@
 - **التأكيد التلقائي**: الحلول عالية الثقة (≥0.85) تُؤكد تلقائيًا وتُضاف لقاعدة المعرفة كبيانات تدريب.
 - **نقاط النهاية**: `GET /experience/stats`، `GET /experience/knowledge`، `POST /experience/find`
 
+### 8. قاعدة معرفة الأنواع الشاملة (`captcha_knowledge.py`)
+
+يحتوي النظام على معرفة مسبقة بكل أنواع الكبتشا المدعومة، مع خصائص كل نوع، استراتيجية الحل الموصى بها، معاملات المعالجة المسبقة، وقواعد الكشف التلقائي:
+
+| النوع | الفئة | الصعوبة | الاستراتيجية | الخدمة الخارجية |
+|-------|-------|---------|-------------|----------------|
+| `image` | صورة/نص | 0.3 | local_primary | لا |
+| `text` | نصي | 0.25 | local_primary | لا |
+| `math` | حسابي | 0.3 | local_primary | لا |
+| `point` | تحديد نقطة | 0.4 | local_primary | لا |
+| `drag` | سحب عناصر | 0.5 | local_primary | لا |
+| `turnstile` | Cloudflare Turnstile | 0.6 | external_primary | نعم |
+| `grid` | شبكة صور | 0.6 | ensemble_with_fallback | لا |
+| `hcaptcha` | hCaptcha | 0.7 | external_primary | نعم |
+| `funcaptcha` | FunCaptcha | 0.7 | external_primary | نعم |
+| `recaptcha_v2` | reCAPTCHA v2 | 0.65 | external_primary | نعم |
+| `geetest` | GeeTest | 0.75 | external_primary | نعم |
+| `recaptcha_v2_invisible` | reCAPTCHA v2 غير مرئي | 0.75 | external_primary | نعم |
+| `recaptcha_v3` | reCAPTCHA v3 | 0.8 | external_primary | نعم |
+| `hcaptcha_enterprise` | hCaptcha Enterprise | 0.85 | external_primary | نعم |
+
+- **الكشف التلقائي**: يُصنّف النوع من ميزات الصورة (المكونات، التشبع، المحاذاة، نسبة الأبعاد) دون تدخل بشري.
+- **الضبط التكيفي**: يُختار أفضل معالجات (psm، threshold، denoise) لكل نوع بناءً على سجل النجاح.
+- **أنماط معروفة**: يُخزّن النظام أنماطًا ناجحة مسبقة (مثل "AB12"، "1234"، "5+3") لاستخدامها فورًا عند مطابقة الميزات.
+- **نقاط النهاية**: `GET /experience/knowledge`، `POST /experience/find`
+
 ## هيكل المشروع
 
 ```
@@ -137,6 +163,7 @@ nonecap-clone/
 │   ├── orchestrator.py         # المنسّق الذاتي الكامل مع التصعيد
 │   ├── worker.py               # العامل الخلفي غير المتزامن
 │   ├── knowledge_base.py       # قاعدة معرفة الأنماط الناجحة
+│   ├── captcha_knowledge.py    # معرفة شاملة لأنواع الكبتشا_ALL_TYPES
 │   └── experience_engine.py    # محرك الخبرة ومستوى الذكاء
 ├── web/                        # واجهة الويب الاحترافية
 │   ├── templates/

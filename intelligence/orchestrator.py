@@ -12,6 +12,13 @@ from solver_engine.registry import SolverRegistry
 from solver_engine.image import ImageSolveConfig
 
 from .analysis import CaptchaAnalyzer
+from .captcha_knowledge import (
+    CAPTCHA_TYPES,
+    get_strategy,
+    get_preprocess,
+    difficulty_score,
+    seed_knowledge_base,
+)
 from .detector import AutoDetector, Detection
 from .experience_engine import ExperienceEngine
 from .knowledge_base import KnowledgeBase
@@ -74,6 +81,7 @@ class AutoOrchestrator:
         self.learner = learner or LearningEngine()
         self.detector = detector or AutoDetector()
         self.knowledge_base = knowledge_base or KnowledgeBase()
+        seed_knowledge_base(self.knowledge_base)
         self.experience = experience or ExperienceEngine(knowledge_base=self.knowledge_base)
         self.external_available = external_available
 
@@ -172,26 +180,41 @@ class AutoOrchestrator:
                 experience=self.experience.status(),
             )
 
-        # 3) قرار الاستراتيجية من محرك التعلم + الاستراتيجية التحليلية
+        # 3) قرار الاستراتيجية من محرك التعلم + الاستراتيجية التحليلية + المعرفة الشاملة
         learned_arm = self.learner.select()
         decision = self.strategy.decide(
             ctype, image=image, sitekey=sitekey, url=url, prefer_human_like=human_like
         )
-        strategy_used = learned_arm
-        trace.append(f"استراتيجية متعلمة: {learned_arm} (تحليلي: {decision.strategy})")
+        # صعوبة النوع من قاعدة المعرفة
+        diff = difficulty_score(ctype.value)
+        strategy_from_kb = get_strategy(ctype.value)
+        # اختر أفضل استراتيجية: المعرفة الشاملة أولوية إذا كان النوع خارجيًا مطلوبًا
+        if CAPTCHA_TYPES.get(ctype.value, None) and CAPTCHA_TYPES[ctype.value].external_required:
+            strategy_used = strategy_from_kb
+        else:
+            strategy_used = learned_arm
+        trace.append(
+            f"صعوبة النوع={diff:.2f}, استراتيجية معرفية={strategy_from_kb}, "
+            f"استراتيجية متعلمة={learned_arm} (تحليلي: {decision.strategy})"
+        )
 
-        # 4) الضبط التلقائي للمعاملات (مع معرفة سابقة إن وُجدت)
+        # 4) الضبط التلقائي للمعاملات (من قاعدة المعرفة أولًا، ثم الضبط التكيفي)
         features = analysis.features if analysis else {}
+        preprocess_kb = get_preprocess(ctype.value)
         suggestion = self.knowledge_base.suggest_params(ctype.value, features)
         if suggestion:
             tuned = suggestion["params"]
             strategy_used = suggestion["strategy"]
             trace.append(
-                f"معاملات من قاعدة المعرفة: {tuned} (استراتيجية {strategy_used}, ثقة معرفية {suggestion.get('confidence', 0):.2f})"
+                f"معاملات من قاعدة المعرفة: {tuned} (استراتيجية {strategy_used}, "
+                f"ثقة معرفية {suggestion.get('confidence', 0):.2f})"
             )
         else:
-            tuned = self.tuner.choose(ctype.value)
-            trace.append(f"معاملات مضبوطة: {tuned}")
+            # دمج معاملات قاعدة المعرفة مع الضبط التكيفي
+            tuned = dict(preprocess_kb)
+            tuned_choice = self.tuner.choose(ctype.value)
+            tuned.update(tuned_choice)
+            trace.append(f"معاملات مضبوطة (قاعدة معرفة + تكيفي): {tuned}")
 
         # 5) تنفيذ الحل مع سلسلة تصعيد
         result = self._attempt(
