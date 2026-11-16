@@ -299,7 +299,7 @@ async def web_dashboard() -> Any:
     return FileResponse("web/templates/dashboard.html")
 
 # --------- نظام التقدم الفوري ----------
-JOB_PROGRESS: Dict[str, JobProgress] = {}
+JOB_PROGRESS: Dict[str, "JobProgress"] = {}
 
 
 # مهام غير متزامنة قيد ejecución (للحصول على نتيجة الحل)
@@ -1106,9 +1106,34 @@ async def auto_solve(
     file_bytes = await file.read() if file else None
     template_bytes = await template.read() if template else None
 
+    # Enhanced intelligence: analyze and preprocess before solving
+    image = None
+    if file_bytes is not None:
+        try:
+            import numpy as np
+            import cv2
+            nparr = np.frombuffer(file_bytes, np.uint8)
+            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        except Exception:
+            pass
+
+    # Enhanced analysis with fallback
+    captcha_type_provided = captcha_type
+    if captcha_type is None:
+        # Auto-detect type if not provided
+        if image is not None:
+            try:
+                detection = detector.detect(image)
+                captcha_type_provided = detection.captcha_type
+            except Exception:
+                captcha_type_provided = "image"
+        else:
+            captcha_type_provided = "image"
+
+    # Run orchestrator with enhanced parameters
     result = await asyncio.to_thread(
         orchestrator.solve,
-        captcha_type=captcha_type,
+        captcha_type=captcha_type_provided,
         image_bytes=file_bytes,
         template_bytes=template_bytes,
         sitekey=sitekey,
@@ -2088,11 +2113,13 @@ async def health() -> Dict[str, str]:
     return {"status": "ok", "service": "nonecap-clone", "version": "0.4.0"}
 
 
-@app.get("/metrics")
-async def metrics() -> Response:
+@app.get("/metrics", include_in_schema=False)
+async def metrics() -> dict:
     if not _PROM_AVAILABLE:
-        return Response(content="# prometheus_client غير مثبت\n".encode("utf-8"), media_type=CONTENT_TYPE_LATEST)
-    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+        return {"error": "prometheus_client غير مثبت"}
+    from fastapi.responses import Response
+    from prometheus_client import generate_latest
+    return {"metrics": generate_latest().decode("utf-8")}
 
 
 def _auth(
