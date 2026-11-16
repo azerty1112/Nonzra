@@ -436,3 +436,58 @@ def test_experience_endpoints():
             json={"captcha_type": "image", "features": {"saturation": 0.1, "component_count": 5.0}},
         )
         assert resp.status_code == 200
+
+
+def test_hcaptcha_nindiad_retry_until_success(monkeypatch):
+    """اختبار إعادة محاولة hCaptcha مع nindiad حتى النجاح."""
+    import httpx
+    from solver_engine.hcaptcha import HCaptchaSolver
+
+    call_count = {"n": 0}
+
+    class MockResponse:
+        def __init__(self, status_code: int, json_data: dict):
+            self.status_code = status_code
+            self._json = json_data
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise httpx.HTTPStatusError(f"HTTP {self.status_code}", request=None, response=self)
+
+        def json(self):
+            return self._json
+
+    class MockClient:
+        def __init__(self, timeout=60.0):
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, url, json=None, headers=None):
+            call_count["n"] += 1
+            # تفشل مرتين ثم تنجح في المحاولة الثالثة
+            if call_count["n"] < 3:
+                return MockResponse(400, {"error": "try again"})
+            return MockResponse(200, {"token": "nindiad_token_123", "confidence": 0.95})
+
+    monkeypatch.setattr(httpx, "Client", MockClient)
+
+    solver = HCaptchaSolver(
+        api_key="test_nindiad_key",
+        external_api="https://api.nindiad.com",
+        external_api_type="nindiad",
+        max_retries=5,
+        retry_delay=0.01,  # تأخير قصير للاختبار
+    )
+
+    result = solver.solve(sitekey="test_sitekey", url="https://example.com")
+
+    assert result.success is True
+    assert result.token == "nindiad_token_123"
+    assert call_count["n"] == 3  # نجحت في المحاولة الثالثة
+    assert result.metadata.get("attempt") == 3
+    assert result.metadata.get("api_type") == "nindiad"

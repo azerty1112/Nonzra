@@ -1,6 +1,6 @@
 """محرك حل الكبتشا المحلي - جميع المحركات والسجل المركزي."""
 
-from .registry import SolverRegistry, registry
+from .registry import SolverRegistry, registry, configure_hcaptcha_external
 from .base import CaptchaType, SolverResult, BaseSolver
 from .image import ImageCaptchaSolver, ImageSolveConfig
 from .hcaptcha import HCaptchaSolver
@@ -14,6 +14,7 @@ from .db import Database
 __all__ = [
     "SolverRegistry",
     "registry",
+    "configure_hcaptcha_external",
     "CaptchaType",
     "SolverResult",
     "BaseSolver",

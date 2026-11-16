@@ -105,6 +105,7 @@ from solver_engine import (
     SolverResult,
     ImageSolveConfig,
     Database,
+    configure_hcaptcha_external,
 )
 
 limiter = Limiter(key_func=get_remote_address)
@@ -946,6 +947,43 @@ async def experience_find(
     if not known:
         return {"found": False}
     return {"found": True, **known}
+
+
+# --------- ضبط خدمة خارجية لـ hCaptcha (nindiad / nonecap) ----------
+
+class ConfigureHCaptchaExternalRequest(BaseModel):
+    api_key: str
+    external_api: str
+    external_api_type: str = "nindiad"  # "nindiad" أو "nonecap"
+    max_retries: int = 10
+    retry_delay: float = 5.0
+
+
+class ConfigureHCaptchaExternalResponse(BaseModel):
+    ok: bool
+    message: str
+    configured: bool
+
+
+@app.post("/api/hcaptcha/external", response_model=ConfigureHCaptchaExternalResponse)
+@limiter.limit("10/minute")
+async def configure_hcaptcha_external_endpoint(
+    req: ConfigureHCaptchaExternalRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> ConfigureHCaptchaExternalResponse:
+    _auth(credentials)
+    configure_hcaptcha_external(
+        api_key=req.api_key,
+        external_api=req.external_api,
+        external_api_type=req.external_api_type,
+        max_retries=req.max_retries,
+        retry_delay=req.retry_delay,
+    )
+    return ConfigureHCaptchaExternalResponse(
+        ok=True,
+        message=f"تم ضبط خدمة hCaptcha الخارجية ({req.external_api_type}) مع إعادة المحاولة حتى النجاح",
+        configured=True,
+    )
 
 
 # --------- لوحة التحكم ----------

@@ -269,6 +269,40 @@ class AutoOrchestrator:
             if alt_result.success and alt_result.confidence >= result.confidence:
                 result = alt_result
 
+        # 6.5) إعادة المحاولة التلقائية لـ hCaptcha حتى النجاح (لا تتوقف حتى تنجح)
+        if ctype == CaptchaType.HCAPTCHA and not result.success:
+            hcaptcha_max_retries = 10
+            hcaptcha_delay = 5.0
+            trace.append(
+                f"بدء إعادة محاولة hCaptcha تلقائيًا حتى النجاح (أقصى {hcaptcha_max_retries} محاولة، تأخير {hcaptcha_delay}s)"
+            )
+            for hc_attempt in range(1, hcaptcha_max_retries + 1):
+                trace.append(f"محاولة hCaptcha #{hc_attempt}/{hcaptcha_max_retries}")
+                if hc_attempt > 1:
+                    time.sleep(hcaptcha_delay)
+                hc_result = self._attempt(
+                    ctype=ctype,
+                    strategy="external_primary",
+                    decision_use_local=False,
+                    params=tuned,
+                    image_bytes=image_bytes,
+                    sitekey=sitekey,
+                    url=url,
+                    action=action,
+                    cdata=cdata,
+                    template_bytes=template_bytes,
+                    human_like=human_like,
+                    trace=trace,
+                    extra=extra,
+                )
+                if hc_result.success:
+                    result = hc_result
+                    trace.append(f"نجح حل hCaptcha في المحاولة #{hc_attempt}")
+                    break
+                result = hc_result
+            else:
+                trace.append(f"فشل حل hCaptcha بعد {hcaptcha_max_retries} محاولة")
+
         # 7) التعلّم والتسجيل
         reward = self.learner.reward_from_result(
             result.success, result.confidence, result.response_time_ms

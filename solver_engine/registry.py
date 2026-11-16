@@ -109,4 +109,25 @@ registry.register(TurnstileSolver())
 registry.register(DragSolver())
 registry.register(PointSolver())
 
-__all__ = ["SolverRegistry", "registry"]
+
+def configure_hcaptcha_external(
+    api_key: Optional[str] = None,
+    external_api: Optional[str] = None,
+    external_api_type: str = "nonecap",
+    max_retries: int = 5,
+    retry_delay: float = 3.0,
+) -> None:
+    """ضبط حلّال hCaptcha لاستخدام خدمة خارجية مع إعادة المحاولة التلقائية."""
+    # إزالة المحلّات القديمة لـ hCaptcha وإضافة جديد بالإعدادات
+    registry._solvers[CaptchaType.HCAPTCHA] = [
+        HCaptchaSolver(
+            api_key=api_key,
+            external_api=external_api,
+            external_api_type=external_api_type,
+            max_retries=max_retries,
+            retry_delay=retry_delay,
+        )
+    ]
+
+
+__all__ = ["SolverRegistry", "registry", "configure_hcaptcha_external"]
