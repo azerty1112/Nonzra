@@ -105,6 +105,39 @@ class ExperienceEngine:
         )
 
     def status(self) -> Dict[str, Any]:
+        # Calculate improvement trend
+        trend = "stable"
+        if self.profile.total_attempts >= 20:
+            recent_rate = self.profile.total_solved / max(self.profile.total_attempts, 1)
+            overall_rate = self.profile.success_rate
+            if recent_rate > overall_rate * 1.1:
+                trend = "improving"
+            elif recent_rate < overall_rate * 0.9:
+                trend = "declining"
+
+        # Calculate efficiency (success per minute)
+        efficiency = 0.0
+        if self.profile.total_attempts > 0 and self.profile.last_updated:
+            try:
+                from datetime import datetime, timezone
+                last = datetime.fromisoformat(self.profile.last_updated)
+                now = datetime.now(timezone.utc)
+                duration_minutes = max(0.1, (now - last).total_seconds() / 60.0)
+                efficiency = self.profile.total_solved / duration_minutes
+            except Exception:
+                efficiency = 0.0
+
+        # Get top performing CAPTCHA types
+        type_performance: Dict[str, float] = {}
+        for p in self.kb.patterns.values():
+            ct = p.captcha_type
+            if ct not in type_performance:
+                type_performance[ct] = 0.0
+            type_performance[ct] = max(type_performance[ct], p.success_rate)
+
+        # Sort by performance
+        top_types = sorted(type_performance.items(), key=lambda x: x[1], reverse=True)[:5]
+
         return {
             "experience_level": self.profile.experience_level,
             "wisdom_score": self.profile.wisdom_score,
@@ -115,7 +148,27 @@ class ExperienceEngine:
             "knowledge_patterns": self.profile.knowledge_patterns,
             "kb_stats": self.kb.stats(),
             "last_updated": self.profile.last_updated,
+            "performance_trend": trend,
+            "efficiency_per_minute": round(efficiency, 2),
+            "top_captcha_types": [{"type": t, "success_rate": round(s, 3)} for t, s in top_types],
+            "recommendation": self._get_improvement_recommendation(),
         }
+
+    def _get_improvement_recommendation(self) -> str:
+        """Get AI-style recommendations for improvement."""
+        sr = self.profile.success_rate
+        level = self.profile.experience_level
+        patterns = self.profile.knowledge_patterns
+        
+        if sr < 0.5 and patterns < 10:
+            return "النظام يتعلم للتو. ركز على حل أنواع الكبتشا الأساسية first وزيادةPatterns in knowledge base."
+        if sr < 0.7 and level < 5:
+            return "معدل النجاح متوسط. جرب استراتيجيات التجميع (ensemble) للكبتشا الصعبة وزد من تجارب التعلم."
+        if patterns < 50 and level < 3:
+            return "قاعدة المعرفة محدودة. استمر في تسجيل الحلول الناجحة لتسريع التعلم المستقبلي."
+        if sr >= 0.9 and level >= 5:
+            return "الأداء ممتاز! النظام مستعد للعمل автономي完全自主 مع أدنى مراقبة."
+        return "يمكن تحسين الأداء من خلال زيادة التنوع في أنواع التجارب وتuned المعلمات لكل سياق."
 
 
 __all__ = ["ExperienceProfile", "ExperienceEngine"]
