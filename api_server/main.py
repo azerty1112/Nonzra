@@ -40,6 +40,22 @@ from api_server.auth import (
     ApiKeyStore,
 )
 from api_server.webhooks import webhook_deliverer
+from api_server.auth_rbac import (
+    UserRole,
+    User,
+    UserManager,
+    user_manager,
+    require_role,
+)
+from api_server.scheduler import (
+    ScheduleType,
+    ScheduledJob,
+    ScheduledJobManager,
+    scheduled_job_manager,
+    _parse_interval,
+)
+from api_server.audit import audit_logger, audit_log
+from api_server.backup import BackupManager, backup_manager
 
 from solver_engine import (
     registry,
@@ -159,13 +175,59 @@ self_improver = SelfImprover(dataset=training_dataset)
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await worker.start()
+    await scheduled_job_manager.start_scheduler(orchestrator)
     try:
         yield
     finally:
+        await scheduled_job_manager.stop_scheduler()
         await worker.stop()
 
 
-app = FastAPI(title="NoneCap Clone API", version="0.5.0", lifespan=lifespan)
+app = FastAPI(
+    title="NoneCap Clone API",
+    version="0.5.0",
+    lifespan=lifespan,
+    description="""
+    # NoneCap Clone API
+
+    إطار عمل مفتوح المصدر ومُستضاف ذاتيًا لحل الكبتشا تلقائيًا.
+
+    ## الميزات الرئيسية
+
+    * **حل الكبتشا التلقائي**: دعم جميع أنواع الكبتشا (صورة، hCaptcha، reCAPTCHA، Turnstile، Drag، Point)
+    * **الذكاء الاصطناعي**: طبقة ذكاء متكاملة مع تعلّم ذاتي وتحليل صعوبة
+    * **أمان متقدم**: مفاتيح API مع تشفير، حظر عناوين IP، معدل طلب متحرك
+    * **مراقبة ذكية**: تنبيهات تلقائية عبر ديسكورد والويب هوك
+    * **واجهة ويب احترافية**: لوحة تحكم واحدة-page مع إحصائيات مباشرة
+    * **حل جماعي**: معالجة دفعات من الكبتشا مع تتبع الحالة
+    * **تدريب ذاتي**: نموذج CNN للتعلم من الحلول الناجحة
+
+    ## المصادقة
+
+    معظم النقاط تتطلب مفتاح API. يمكن الحصول على مفتاح عبر نقطة `/api/keys`.
+
+    ## حدود المعدل
+
+    يتم تطبيق حد 120 طلب في الدقيقة لكل عنوان IP.
+    """,
+    contact={
+        "name": "NoneCap Clone Support",
+        "url": "https://github.com/azerty1112/Nonzra",
+    },
+    license_info={
+        "name": "MIT License",
+        "url": "https://opensource.org/licenses/MIT",
+    },
+    openapi_tags=[
+        {"name": "solving", "description": "حل الكبتشا بأنواعه المختلفة"},
+        {"name": "auto", "description": "الحل الذاتي الكامل مع الكشف التلقائي"},
+        {"name": "bulk", "description": "الحل الجماعي للدفعات"},
+        {"name": "keys", "description": "إدارة مفاتيح API"},
+        {"name": "monitoring", "description": "المراقبة الذكية والإحصائيات"},
+        {"name": "intelligence", "description": "الطبقة الذكية والتعلّم الذاتي"},
+        {"name": "system", "description": "نقاط نهاية النظام (الحالة، الإحصائيات، إلخ)"},
+    ],
+)
 app.state.limiter = limiter
 
 # قاعدة بيانات آمنة مع تشفير مفاتيح API
@@ -236,10 +298,155 @@ async def security_middleware(request: Request, call_next: Any) -> Any:
 async def web_dashboard() -> Any:
     return FileResponse("web/templates/dashboard.html")
 
-# مهام غير متزامنة قيد ejecución
+# --------- نظام التقدم الفوري ----------
+JOB_PROGRESS: Dict[str, JobProgress] = {}
+
+
+# مهام غير متزامنة قيد ejecución (للحصول على نتيجة الحل)
 JOBS: Dict[str, Dict[str, Any]] = {}
-# WebSocket العملاء المرتبطين بكل وظيفة
+# WebSocket العملاء المرتبطين بكل وظيفة (للتوافق مع النظام القديم)
 JOB_SUBSCRIBERS: Dict[str, list] = {}
+
+
+class JobProgress:
+    """تتبع تقدم مهمة الحل مع تحديثات فورية."""
+
+    def __init__(self, job_id: str) -> None:
+        self.job_id = job_id
+        self.status: str = "queued"
+        self.progress: int = 0
+        self.current_step: str = "في الانتظار"
+        self.step_details: List[Dict[str, Any]] = []
+        self.result: Optional[Dict[str, Any]] = None
+        self.error: Optional[str] = None
+        self.created_at: str = _now()
+        self.finished_at: Optional[str] = None
+        self.subscribers: List[WebSocket] = []
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "job_id": self.job_id,
+            "status": self.status,
+            "progress": self.progress,
+            "current_step": self.current_step,
+            "step_details": self.step_details,
+            "result": self.result,
+            "error": self.error,
+            "created_at": self.created_at,
+            "finished_at": self.finished_at,
+        }
+
+    def add_step(self, step_name: str, details: Optional[Dict[str, Any]] = None, progress: Optional[int] = None) -> None:
+        """إضافة خطوة تقدم جديدة."""
+        step: Dict[str, Any] = {
+            "step": step_name,
+            "timestamp": _now(),
+            "details": details or {},
+        }
+        if progress is not None:
+            self.progress = progress
+            step_progress: int = progress
+            step["progress"] = step_progress
+        self.step_details.append(step)
+        self.current_step = step_name
+        # إرسال التحديث لجميع المشتركين
+        payload = {
+            "job_id": self.job_id,
+            "status": self.status,
+            "progress": self.progress,
+            "current_step": step_name,
+            "step": step,
+        }
+        import asyncio
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(self._publish_progress(payload))
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def _publish_progress(self, payload: Dict[str, Any]) -> None:
+        """نشر التقدم للعملاء المتصلين عبر WebSocket."""
+        for ws in list(self.subscribers):
+            try:
+                await ws.send_json(payload)
+            except Exception:  # noqa: BLE001
+                if ws in self.subscribers:
+                    self.subscribers.remove(ws)
+
+    def set_result(self, result: Dict[str, Any], success: bool) -> None:
+        """تعيين نتيجة الحل."""
+        self.result = result
+        self.status = "completed" if success else "failed"
+        self.progress = 100
+        self.finished_at = _now()
+        payload = {
+            "job_id": self.job_id,
+            "status": self.status,
+            "progress": self.progress,
+            "current_step": self.current_step,
+            "result": result,
+            "error": self.error,
+            "finished_at": self.finished_at,
+        }
+        import asyncio
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(self._publish_progress(payload))
+        except Exception:  # noqa: BLE001
+            pass
+
+    def set_error(self, error: str) -> None:
+        """تعيين خطأ في الحل."""
+        self.error = error
+        self.status = "failed"
+        self.progress = 100
+        self.finished_at = _now()
+        payload = {
+            "job_id": self.job_id,
+            "status": self.status,
+            "progress": self.progress,
+            "current_step": self.current_step,
+            "error": error,
+            "finished_at": self.finished_at,
+        }
+        import asyncio
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(self._publish_progress(payload))
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def get_or_create_job_progress(job_id: str) -> JobProgress:
+    """الحصول على أو إنشاء كائن تقدم المهمة."""
+    if job_id not in JOB_PROGRESS:
+        JOB_PROGRESS[job_id] = JobProgress(job_id)
+    return JOB_PROGRESS[job_id]
+
+
+def cleanup_old_jobs(max_age_hours: int = 24) -> None:
+    """تنظيف الوظائف القديمة من الذاكرة."""
+    now = time.time()
+    to_remove = []
+    for job_id, job in JOB_PROGRESS.items():
+        created = datetime.fromisoformat(job.created_at)
+        age_hours = (datetime.now(timezone.utc) - created).total_seconds() / 3600
+        if age_hours > max_age_hours:
+            to_remove.append(job_id)
+    for job_id in to_remove:
+        del JOB_PROGRESS[job_id]
+        if job_id in JOBS:
+            del JOBS[job_id]
+        if job_id in JOB_SUBSCRIBERS:
+            del JOB_SUBSCRIBERS[job_id]
+
+
 
 
 def _now() -> str:
@@ -289,10 +496,58 @@ async def _run_job(
     kwargs: Dict[str, Any],
     decision: Optional[SolveDecision] = None,
 ) -> None:
+    """تشغيل مهمة الحل مع تتبع التقدم الفوري عبر WebSocket."""
+    progress = get_or_create_job_progress(job_id)
     callback_url = kwargs.pop("callback_url", None)
-    JOBS[job_id]["status"] = "processing"
-    await _publish(job_id, {"job_id": job_id, "status": "processing"})
+
+    # مرحلة 1: بدء المعالجة
+    progress.status = "processing"
+    progress.add_step("البدء", {"captcha_type": captcha_type.value}, progress=10)
+    await _publish(
+        job_id,
+        {
+            "job_id": job_id,
+            "status": "processing",
+            "progress": progress.progress,
+            "current_step": progress.current_step,
+            "step_details": progress.step_details,
+        },
+    )
+
+    # مرحلة 2: التحليل الذكي
+    progress.add_step("التحليل الذكي", {"type": captcha_type.value}, progress=20)
+    await _publish(
+        job_id,
+        {
+            "job_id": job_id,
+            "status": "processing",
+            "progress": progress.progress,
+            "current_step": progress.current_step,
+            "step_details": progress.step_details,
+        },
+    )
+
     try:
+        # مرحلة 3: تطبيق الاستراتيجية
+        progress.add_step(
+            "تطبيق الاستراتيجية",
+            {
+                "strategy": decision.strategy if decision else "default",
+                "use_local": decision.use_local if decision else True,
+            },
+            progress=40,
+        )
+        await _publish(
+            job_id,
+            {
+                "job_id": job_id,
+                "status": "processing",
+                "progress": progress.progress,
+                "current_step": progress.current_step,
+                "step_details": progress.step_details,
+            },
+        )
+
         if decision is not None and decision.strategy == "ensemble_with_fallback":
             solvers = registry.get_solvers(captcha_type)
             result = strategy.ensemble_solve(solvers, captcha_type, **kwargs)
@@ -301,6 +556,28 @@ async def _run_job(
             result = await registry.solve_async(
                 captcha_type, prefer_local=use_local, **kwargs
             )
+
+        # مرحلة 4: إنهاء الحل
+        progress.add_step(
+            "إنهاء الحل",
+            {
+                "success": result.success,
+                "confidence": result.confidence,
+                "response_time_ms": result.response_time_ms,
+            },
+            progress=80,
+        )
+        await _publish(
+            job_id,
+            {
+                "job_id": job_id,
+                "status": "processing",
+                "progress": progress.progress,
+                "current_step": progress.current_step,
+                "step_details": progress.step_details,
+            },
+        )
+
         JOBS[job_id]["status"] = "completed" if result.success else "failed"
         JOBS[job_id]["result"] = result.to_dict()
         JOBS[job_id]["finished_at"] = _now()
@@ -323,15 +600,8 @@ async def _run_job(
         )
         new_alerts = monitor.record(event)
         JOBS[job_id]["alerts"] = [a.__dict__ for a in new_alerts]
-        await _publish(
-            job_id,
-            {
-                "job_id": job_id,
-                "status": JOBS[job_id]["status"],
-                "result": result.to_dict(),
-                "alerts": [a.__dict__ for a in new_alerts],
-            },
-        )
+
+        # تسجيل في محرك الخبرة إذا كانت الثقة عالية
         if result.success and result.confidence >= self_improver.retrain_confidence_threshold:
             image_b64 = None
             image_bytes = kwargs.get("image_bytes")
@@ -346,6 +616,21 @@ async def _run_job(
                 text=result.text or result.token,
                 confidence=result.confidence,
             )
+
+        # إرسال النتيجة النهائية عبر WebSocket
+        progress.set_result(result.to_dict(), result.success)
+
+        await _publish(
+            job_id,
+            {
+                "job_id": job_id,
+                "status": JOBS[job_id]["status"],
+                "progress": 100,
+                "current_step": progress.current_step,
+                "result": result.to_dict(),
+                "alerts": [a.__dict__ for a in new_alerts],
+            },
+        )
         if callback_url:
             await webhook_deliverer.deliver(
                 callback_url,
@@ -371,7 +656,8 @@ async def _run_job(
             error=str(exc),
         )
         monitor.record(event)
-        await _publish(job_id, {"job_id": job_id, "status": "failed", "error": str(exc)})
+        progress.set_error(str(exc))
+        await _publish(job_id, {"job_id": job_id, "status": "failed", "error": str(exc), "progress": 100})
         if callback_url:
             await webhook_deliverer.deliver(
                 callback_url,
@@ -497,6 +783,27 @@ async def solve_sync(
         error=result.error,
     )
 
+    # --------- التدقيق ----------
+    current_user = None
+    if credentials:
+        current_user = user_manager.authenticate(credentials.credentials)
+    audit_log(
+        action="solve_captcha",
+        resource="captcha",
+        resource_id=captcha_type,
+        user_id=current_user.user_id if current_user else None,
+        username=current_user.username if current_user else None,
+        details={
+            "captcha_type": ctype.value,
+            "success": result.success,
+            "confidence": result.confidence,
+            "response_time_ms": result.response_time_ms,
+            "strategy": decision.strategy,
+        },
+        success=result.success,
+        error_message=result.error,
+    )
+
     return SolveResponse(
         job_id="sync",
         status="completed" if result.success else "failed",
@@ -573,6 +880,9 @@ async def solve_async(
         },
     }
     JOB_SUBSCRIBERS[job_id] = []
+    # تهيئة نظام التقدم
+    progress = get_or_create_job_progress(job_id)
+    progress.add_step("في الطابور", {"captcha_type": ctype.value}, progress=0)
     import asyncio
 
     asyncio.create_task(_run_job(job_id, ctype, kwargs, decision))
@@ -605,22 +915,36 @@ async def job_status(job_id: str, credentials: Optional[HTTPAuthorizationCredent
     )
 
 
+@app.get("/job/{job_id}/progress")
+@limiter.limit("120/minute")
+async def job_progress(
+    job_id: str,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    """الحصول على تقدم المهمة مع تفاصيل الخطوات."""
+    _auth(credentials)
+    progress = get_or_create_job_progress(job_id)
+    return progress.to_dict()
+
+
 @app.websocket("/ws/job/{job_id}")
 async def ws_job(websocket: WebSocket, job_id: str) -> None:
+    """اتصال WebSocket للتحديثات الفورية لتقدم مهمة الحل."""
     await websocket.accept()
-    JOB_SUBSCRIBERS.setdefault(job_id, []).append(websocket)
+    progress = get_or_create_job_progress(job_id)
+    progress.subscribers.append(websocket)
+
     # إرسال الحالة الحالية فورًا
-    job = JOBS.get(job_id)
-    if job:
-        await websocket.send_json({"job_id": job_id, "status": job["status"], "result": job.get("result")})
+    await websocket.send_json(progress.to_dict())
+
     try:
         while True:
             await websocket.receive_text()  # إبقاء الاتصال مفتوحًا
     except WebSocketDisconnect:
         pass
     finally:
-        if job_id in JOB_SUBSCRIBERS and websocket in JOB_SUBSCRIBERS[job_id]:
-            JOB_SUBSCRIBERS[job_id].remove(websocket)
+        if websocket in progress.subscribers:
+            progress.subscribers.remove(websocket)
 
 
 # --------- الإحصائيات ----------
@@ -637,6 +961,95 @@ async def stats(credentials: Optional[HTTPAuthorizationCredentials] = Depends(se
 async def monitor_report(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Dict[str, Any]:
     _auth(credentials)
     return monitor.report()
+
+
+# --------- تحليلات متقدمة ----------
+
+@app.get("/analytics/summary")
+@limiter.limit("60/minute")
+async def analytics_summary(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    """ملخص التحليلات الشاملة."""
+    _auth(credentials)
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="مفتاح API مطلوب")
+    current_user = user_manager.authenticate(credentials.credentials)
+    if current_user is None:
+        raise HTTPException(status_code=401, detail="مفتاح API غير صالح")
+
+    db_stats = db.stats()
+    learning_stats = self_improver.stats()
+    experience_stats = experience_engine.status()
+    audit_stats = audit_logger.get_stats()
+    monitor_report_data = monitor.report()
+
+    return {
+        "database": db_stats,
+        "learning": learning_stats,
+        "experience": experience_stats,
+        "audit": audit_stats,
+        "monitor": monitor_report_data,
+    }
+
+
+@app.get("/analytics/captcha-types")
+@limiter.limit("60/minute")
+async def analytics_captcha_types(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    """إحصائيات حسب نوع الكبتشا."""
+    _auth(credentials)
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="مفتاح API مطلوب")
+
+    db_stats = db.stats()
+    by_type = db_stats.get("by_type", {})
+
+    # حساب النسب المئوية
+    total = db_stats.get("total", 0)
+    type_percentages = {}
+    for captcha_type, count in by_type.items():
+        type_percentages[captcha_type] = {
+            "count": count,
+            "percentage": round((count / total * 100) if total > 0 else 0, 2),
+        }
+
+    return {
+        "total": total,
+        "by_type": type_percentages,
+    }
+
+
+@app.get("/analytics/audit")
+@limiter.limit("60/minute")
+async def analytics_audit(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    """إحصائيات التدقيق."""
+    _auth(credentials)
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="مفتاح API مطلوب")
+
+    return audit_logger.get_stats()
+
+
+@app.get("/analytics/recent-activity")
+@limiter.limit("60/minute")
+async def analytics_recent_activity(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    limit: int = 50,
+) -> Dict[str, Any]:
+    """النشاط الأخير."""
+    _auth(credentials)
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="مفتاح API مطلوب")
+
+    events = audit_logger.get_events(limit=limit)
+    return {
+        "recent_events": [e.to_dict() for e in events],
+        "total": len(events),
+    }
 
 
 @app.post("/analysis/image")
@@ -915,6 +1328,473 @@ async def delete_api_key(
     if not ok:
         raise HTTPException(status_code=404, detail="المفتاح غير موجود")
     return {"ok": True}
+
+
+# --------- إدارة المستخدمين والتحكم في الوصول (RBAC) ----------
+
+class CreateUserRequest(BaseModel):
+    username: str
+    role: str = "user"
+    api_key: Optional[str] = None
+
+
+class UserResponse(BaseModel):
+    user_id: str
+    username: str
+    role: str
+    is_active: bool
+    created_at: str
+    last_login: Optional[str] = None
+    total_solves: int = 0
+    total_attempts: int = 0
+
+
+class UpdateUserRequest(BaseModel):
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+@app.get("/users", response_model=list)
+@limiter.limit("60/minute")
+async def list_users(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> list:
+    """قائمة جميع المستخدمين (مخصص للمشرفين فقط)."""
+    _auth(credentials)
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="مفتاح API مطلوب")
+    current_user = user_manager.authenticate(credentials.credentials)
+    if current_user is None:
+        raise HTTPException(status_code=401, detail="مفتاح API غير صالح")
+    if not user_manager.has_permission(current_user, UserRole.ADMIN):
+        raise HTTPException(
+            status_code=403,
+            detail="هذا الطريق مخصص للمشرفين فقط",
+        )
+    return user_manager.to_dict_list()
+
+
+@app.post("/users", response_model=UserResponse)
+@limiter.limit("30/minute")
+async def create_user(
+    req: CreateUserRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> UserResponse:
+    """إنشاء مستخدم جديد (مخصص للمشرفين فقط)."""
+    _auth(credentials)
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="مفتاح API مطلوب")
+    current_user = user_manager.authenticate(credentials.credentials)
+    if current_user is None:
+        raise HTTPException(status_code=401, detail="مفتاح API غير صالح")
+    if not user_manager.has_permission(current_user, UserRole.ADMIN):
+        raise HTTPException(
+            status_code=403,
+            detail="هذا الطريق مخصص للمشرفين فقط",
+        )
+
+    try:
+        role = UserRole(req.role)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"دور غير صالح: {req.role}. الأدوار المتاحة: admin, operator, user, guest",
+        )
+
+    user = user_manager.create_user(
+        username=req.username,
+        role=role,
+        api_key=req.api_key,
+    )
+    return UserResponse(
+        user_id=user.user_id,
+        username=user.username,
+        role=user.role.value,
+        is_active=user.is_active,
+        created_at=user.created_at,
+        last_login=user.last_login,
+        total_solves=user.total_solves,
+        total_attempts=user.total_attempts,
+    )
+
+
+@app.get("/users/{user_id}", response_model=UserResponse)
+@limiter.limit("60/minute")
+async def get_user(
+    user_id: str,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> UserResponse:
+    """الحصول على تفاصيل مستخدم."""
+    _auth(credentials)
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="مفتاح API مطلوب")
+    current_user = user_manager.authenticate(credentials.credentials)
+    if current_user is None:
+        raise HTTPException(status_code=401, detail="مفتاح API غير صالح")
+    if not user_manager.has_permission(current_user, UserRole.ADMIN):
+        raise HTTPException(
+            status_code=403,
+            detail="هذا الطريق مخصص للمشرفين فقط",
+        )
+
+    user = user_manager.get_user(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="المستخدم غير موجود")
+    return UserResponse(
+        user_id=user.user_id,
+        username=user.username,
+        role=user.role.value,
+        is_active=user.is_active,
+        created_at=user.created_at,
+        last_login=user.last_login,
+        total_solves=user.total_solves,
+        total_attempts=user.total_attempts,
+    )
+
+
+@app.put("/users/{user_id}", response_model=UserResponse)
+@limiter.limit("30/minute")
+async def update_user(
+    user_id: str,
+    req: UpdateUserRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> UserResponse:
+    """تحديث مستخدم (مخصص للمشرفين فقط)."""
+    _auth(credentials)
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="مفتاح API مطلوب")
+    current_user = user_manager.authenticate(credentials.credentials)
+    if current_user is None:
+        raise HTTPException(status_code=401, detail="مفتاح API غير صالح")
+    if not user_manager.has_permission(current_user, UserRole.ADMIN):
+        raise HTTPException(
+            status_code=403,
+            detail="هذا الطريق مخصص للمشرفين فقط",
+        )
+
+    role = None
+    if req.role is not None:
+        try:
+            role = UserRole(req.role)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"دور غير صالح: {req.role}",
+            )
+
+    user = user_manager.update_user(
+        user_id=user_id,
+        role=role,
+        is_active=req.is_active,
+    )
+    if not user:
+        raise HTTPException(status_code=404, detail="المستخدم غير موجود")
+    return UserResponse(
+        user_id=user.user_id,
+        username=user.username,
+        role=user.role.value,
+        is_active=user.is_active,
+        created_at=user.created_at,
+        last_login=user.last_login,
+        total_solves=user.total_solves,
+        total_attempts=user.total_attempts,
+    )
+
+
+@app.delete("/users/{user_id}")
+@limiter.limit("30/minute")
+async def delete_user(
+    user_id: str,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    """حذف مستخدم (مخصص للمشرفين فقط)."""
+    _auth(credentials)
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="مفتاح API مطلوب")
+    current_user = user_manager.authenticate(credentials.credentials)
+    if current_user is None:
+        raise HTTPException(status_code=401, detail="مفتاح API غير صالح")
+    if not user_manager.has_permission(current_user, UserRole.ADMIN):
+        raise HTTPException(
+            status_code=403,
+            detail="هذا الطريق مخصص للمشرفين فقط",
+        )
+
+    try:
+        ok = user_manager.delete_user(user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not ok:
+        raise HTTPException(status_code=404, detail="المستخدم غير موجود")
+    return {"ok": True}
+
+
+@app.get("/users/me", response_model=UserResponse)
+@limiter.limit("60/minute")
+async def get_current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> UserResponse:
+    """الحصول على بيانات المستخدم الحالي."""
+    _auth(credentials)
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="مفتاح API مطلوب")
+    user = user_manager.authenticate(credentials.credentials)
+    if not user:
+        raise HTTPException(status_code=401, detail="مفتاح API غير صالح")
+    return UserResponse(
+        user_id=user.user_id,
+        username=user.username,
+        role=user.role.value,
+        is_active=user.is_active,
+        created_at=user.created_at,
+        last_login=user.last_login,
+        total_solves=user.total_solves,
+        total_attempts=user.total_attempts,
+    )
+
+
+# --------- الجدولة التلقائية ----------
+
+class ScheduleJobRequest(BaseModel):
+    name: str
+    captcha_type: str
+    schedule_type: str = "interval"
+    interval_seconds: Optional[int] = None
+    cron_expression: Optional[str] = None
+    sitekey: Optional[str] = None
+    url: Optional[str] = None
+    action: Optional[str] = None
+    cdata: Optional[str] = None
+    image_url: Optional[str] = None
+
+
+class ScheduleJobResponse(BaseModel):
+    job_id: str
+    name: str
+    captcha_type: str
+    schedule_type: str
+    next_run: Optional[str]
+    is_active: bool
+
+
+@app.post("/schedule/jobs", response_model=ScheduleJobResponse)
+@limiter.limit("30/minute")
+async def create_scheduled_job(
+    req: ScheduleJobRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> ScheduleJobResponse:
+    """إنشاء مهمة مجدولة جديدة للتحل التلقائي."""
+    _auth(credentials)
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="مفتاح API مطلوب")
+    current_user = user_manager.authenticate(credentials.credentials)
+    if current_user is None:
+        raise HTTPException(status_code=401, detail="مفتاح API غير صالح")
+
+    job = scheduled_job_manager.create_job(
+        name=req.name,
+        captcha_type=req.captcha_type,
+        schedule_type=req.schedule_type,
+        interval_seconds=req.interval_seconds,
+        cron_expression=req.cron_expression,
+        sitekey=req.sitekey,
+        url=req.url,
+        action=req.action,
+        cdata=req.cdata,
+        image_url=req.image_url,
+    )
+    return ScheduleJobResponse(
+        job_id=job.job_id,
+        name=job.name,
+        captcha_type=job.captcha_type,
+        schedule_type=job.schedule_type.value,
+        next_run=job.next_run,
+        is_active=job.is_active,
+    )
+
+
+@app.get("/schedule/jobs", response_model=list)
+@limiter.limit("60/minute")
+async def list_scheduled_jobs(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> list:
+    """قائمة جميع المهام المجدولة."""
+    _auth(credentials)
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="مفتاح API مطلوب")
+    current_user = user_manager.authenticate(credentials.credentials)
+    if current_user is None:
+        raise HTTPException(status_code=401, detail="مفتاح API غير صالح")
+    return [job.to_dict() for job in scheduled_job_manager.list_jobs()]
+
+
+@app.get("/schedule/jobs/{job_id}", response_model=ScheduleJobResponse)
+@limiter.limit("60/minute")
+async def get_scheduled_job(
+    job_id: str,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> ScheduleJobResponse:
+    """الحصول على تفاصيل مهمة مجدولة."""
+    _auth(credentials)
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="مفتاح API مطلوب")
+    current_user = user_manager.authenticate(credentials.credentials)
+    if current_user is None:
+        raise HTTPException(status_code=401, detail="مفتاح API غير صالح")
+
+    job = scheduled_job_manager.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="المهمة المجدولة غير موجودة")
+    return ScheduleJobResponse(
+        job_id=job.job_id,
+        name=job.name,
+        captcha_type=job.captcha_type,
+        schedule_type=job.schedule_type.value,
+        next_run=job.next_run,
+        is_active=job.is_active,
+    )
+
+
+@app.put("/schedule/jobs/{job_id}", response_model=ScheduleJobResponse)
+@limiter.limit("30/minute")
+async def update_scheduled_job(
+    job_id: str,
+    req: ScheduleJobRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> ScheduleJobResponse:
+    """تحديث مهمة مجدولة."""
+    _auth(credentials)
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="مفتاح API مطلوب")
+    current_user = user_manager.authenticate(credentials.credentials)
+    if current_user is None:
+        raise HTTPException(status_code=401, detail="مفتاح API غير صالح")
+
+    job = scheduled_job_manager.update_job(
+        job_id=job_id,
+        is_active=req.is_active if hasattr(req, 'is_active') else None,
+        interval_seconds=req.interval_seconds,
+        cron_expression=req.cron_expression,
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="المهمة المجدولة غير موجودة")
+    return ScheduleJobResponse(
+        job_id=job.job_id,
+        name=job.name,
+        captcha_type=job.captcha_type,
+        schedule_type=job.schedule_type.value,
+        next_run=job.next_run,
+        is_active=job.is_active,
+    )
+
+
+@app.delete("/schedule/jobs/{job_id}")
+@limiter.limit("30/minute")
+async def delete_scheduled_job(
+    job_id: str,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    """حذف مهمة مجدولة."""
+    _auth(credentials)
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="مفتاح API مطلوب")
+    current_user = user_manager.authenticate(credentials.credentials)
+    if current_user is None:
+        raise HTTPException(status_code=401, detail="مفتاح API غير صالح")
+
+    ok = scheduled_job_manager.delete_job(job_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="المهمة المجدولة غير موجودة")
+    return {"ok": True}
+
+
+# --------- النسخ الاحتياطي ----------
+
+class BackupRequest(BaseModel):
+    include_db: bool = True
+    include_config: bool = True
+    include_intelligence: bool = True
+    backup_type: str = "full"
+
+
+class BackupResponse(BaseModel):
+    backup_id: str
+    timestamp: str
+    backup_type: str
+    file_path: str
+    file_size: int
+    includes_db: bool
+    includes_config: bool
+    includes_intelligence: bool
+    status: str
+    error: Optional[str] = None
+
+
+@app.post("/backup/create", response_model=BackupResponse)
+@limiter.limit("10/minute")
+async def create_backup(
+    req: BackupRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> BackupResponse:
+    """إنشاء نسخة احتياطية من النظام."""
+    _auth(credentials)
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="مفتاح API مطلوب")
+    current_user = user_manager.authenticate(credentials.credentials)
+    if current_user is None:
+        raise HTTPException(status_code=401, detail="مفتاح API غير صالح")
+
+    backup = backup_manager.create_backup(
+        include_db=req.include_db,
+        include_config=req.include_config,
+        include_intelligence=req.include_intelligence,
+        backup_type=req.backup_type,
+    )
+    return BackupResponse(
+        backup_id=backup.backup_id,
+        timestamp=backup.timestamp,
+        backup_type=backup.backup_type,
+        file_path=backup.file_path,
+        file_size=backup.file_size,
+        includes_db=backup.includes_db,
+        includes_config=backup.includes_config,
+        includes_intelligence=backup.includes_intelligence,
+        status=backup.status,
+        error=backup.error,
+    )
+
+
+@app.get("/backup/list", response_model=list)
+@limiter.limit("60/minute")
+async def list_backups(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> list:
+    """قائمة جميع النسخ الاحتياطية."""
+    _auth(credentials)
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="مفتاح API مطلوب")
+    current_user = user_manager.authenticate(credentials.credentials)
+    if current_user is None:
+        raise HTTPException(status_code=401, detail="مفتاح API غير صالح")
+
+    return [b.to_dict() for b in backup_manager.list_backups()]
+
+
+@app.post("/backup/restore/{backup_id}")
+@limiter.limit("10/minute")
+async def restore_backup(
+    backup_id: str,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    """استعادة نسخة احتياطية."""
+    _auth(credentials)
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="مفتاح API مطلوب")
+    current_user = user_manager.authenticate(credentials.credentials)
+    if current_user is None:
+        raise HTTPException(status_code=401, detail="مفتاح API غير صالح")
+
+    return backup_manager.restore_backup(backup_id)
 
 
 # --------- الحل الجماعي ----------

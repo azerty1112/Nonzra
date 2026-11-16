@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 import time
 
 from .base import BaseSolver, CaptchaType, SolverResult
+from .cnn import CNNSolver, CNNModelConfig, _TORCH_AVAILABLE
 from .image import ImageCaptchaSolver, ImageSolveConfig
 from .hcaptcha import HCaptchaSolver, ExternalService
 from .recaptcha import ReCaptchaSolver
@@ -141,4 +142,40 @@ def get_hcaptcha_service_stats() -> List[Dict[str, Any]]:
     return []
 
 
-__all__ = ["SolverRegistry", "registry", "configure_hcaptcha_external", "get_hcaptcha_service_stats"]
+def configure_cnn_solver(
+    model_path: Optional[str] = None,
+    config: Optional[CNNModelConfig] = None,
+) -> CNNSolver:
+    """ضبط نموذج CNN للتعلم الذاتي."""
+    cnn_config = config or CNNModelConfig()
+    if model_path:
+        cnn_config.model_path = model_path
+    cnn_solver = CNNSolver(cnn_config)
+    registry._solvers[CaptchaType.IMAGE] = [
+        s for s in registry._solvers.get(CaptchaType.IMAGE, [])
+        if not isinstance(s, CNNSolver)
+    ] + [cnn_solver]
+    return cnn_solver
+
+
+def get_cnn_stats() -> Dict[str, Any]:
+    """إرجاع إحصائيات نموذج CNN."""
+    solvers = registry.get_solvers(CaptchaType.IMAGE)
+    for s in solvers:
+        if isinstance(s, CNNSolver):
+            return {
+                "available": s.is_model_available(),
+                "trained": s.is_trained,
+                "torch_available": _TORCH_AVAILABLE,
+            }
+    return {"available": False, "trained": False, "torch_available": _TORCH_AVAILABLE}
+
+
+__all__ = [
+    "SolverRegistry",
+    "registry",
+    "configure_hcaptcha_external",
+    "get_hcaptcha_service_stats",
+    "configure_cnn_solver",
+    "get_cnn_stats",
+]

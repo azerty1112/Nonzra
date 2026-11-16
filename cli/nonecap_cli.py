@@ -4,7 +4,7 @@ import argparse
 import base64
 import json
 import sys
-from typing import Any, Optional
+from typing import Any, Optional, Dict
 
 try:
     import httpx
@@ -375,7 +375,148 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("self-improve-retrain", help="إعادة تدريب النموذج الذاتي")
     sp.set_defaults(func=cmd_self_improve_retrain)
 
+    sp = sub.add_parser("interactive", help="وضع تفاعلي للحل والتحكم")
+    sp.add_argument("--base-url", default="http://localhost:8000", help="رابط السيرفر")
+    sp.add_argument("--api-key", default=None, help="مفتاح API")
+    sp.set_defaults(func=cmd_interactive)
+
     return p
+
+
+def cmd_interactive(args: argparse.Namespace) -> int:
+    """وضع تفاعلي للحل والتحكم في السيرفر."""
+    base_url = args.base_url or "http://localhost:8000"
+    api_key = args.api_key
+
+    print("=" * 60)
+    print("نظام NoneCap Clone - الوضع التفاعلي")
+    print("=" * 60)
+    print(f"السيرفر: {base_url}")
+    print(f"مفتاح API: {'محدد' if api_key else 'غير محدد'}")
+    print("=" * 60)
+    print("الأوامر المتاحة:")
+    print("  health       - فحص حالة السيرفر")
+    print("  stats        - عرض الإحصائيات")
+    print("  solve        - حل صورة كبتشا")
+    print("  auto         - حل تلقائي كامل")
+    print("  jobs         - عرض المهام المجدولة")
+    print("  users        - عرض المستخدمين (يتطلب صلاحية مشرف)")
+    print("  help         - عرض هذه المساعدة")
+    print("  exit/quit    - الخروج")
+    print("=" * 60)
+
+    while True:
+        try:
+            cmd = input("\nnonecap> ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print("\n-> خروجالنظام.")
+            return 0
+
+        if not cmd:
+            continue
+
+        if cmd in ("exit", "quit", "q"):
+            print("-> خروجالنظام.")
+            return 0
+
+        elif cmd == "help":
+            print("الأوامر المتاحة:")
+            print("  health     - فحص حالة السيرفر")
+            print("  stats      - عرض الإحصائيات")
+            print("  solve      - حل صورة كبتشا")
+            print("  auto       - حل تلقائي كامل")
+            print("  jobs       - عرض المهام المجدولة")
+            print("  users      - عرض المستخدمين (يتطلب صلاحية مشرف)")
+            print("  help       - عرض هذه المساعدة")
+            print("  exit/quit  - الخروج")
+
+        elif cmd == "health":
+            try:
+                import httpx
+                with httpx.Client(base_url=base_url, timeout=args.timeout,
+                                  headers={"Authorization": f"Bearer {api_key}"} if api_key else {}) as c:
+                    r = c.get("/health")
+                    r.raise_for_status()
+                    print(json.dumps(r.json(), ensure_ascii=False, indent=2))
+            except Exception as exc:
+                print(f"خطأ: {exc}")
+
+        elif cmd == "stats":
+            try:
+                import httpx
+                with httpx.Client(base_url=base_url, timeout=args.timeout,
+                                  headers={"Authorization": f"Bearer {api_key}"} if api_key else {}) as c:
+                    r = c.get("/stats")
+                    r.raise_for_status()
+                    print(json.dumps(r.json(), ensure_ascii=False, indent=2))
+            except Exception as exc:
+                print(f"خطأ: {exc}")
+
+        elif cmd == "solve":
+            image_path = input("مسار صورة الكبتشا: ").strip()
+            captcha_type = input("نوع الكبتشا (image, hcaptcha, ...): ").strip() or "image"
+            try:
+                import httpx
+                with open(image_path, "rb") as f:
+                    image_data = f.read()
+                with httpx.Client(base_url=base_url, timeout=args.timeout,
+                                  headers={"Authorization": f"Bearer {api_key}"} if api_key else {}) as c:
+                    files = {"file": ("captcha.png", image_data, "image/png")}
+                    data = {"captcha_type": captcha_type}
+                    r = c.post("/solve/image", files=files, data=data)
+                    r.raise_for_status()
+                    result = r.json()
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+            except Exception as exc:
+                print(f"خطأ: {exc}")
+
+        elif cmd == "auto":
+            image_path = input("مسار صورة الكبتشا (اترك فارغًا للكشف التلقائي): ").strip()
+            captcha_type = input("نوع الكبتشا (اترك فارغًا للكشف التلقائي): ").strip()
+            try:
+                import httpx
+                files = {}
+                auto_data: Dict[str, Any] = {"captcha_type": captcha_type or "image", "human_like": "false", "max_escalations": "2"}
+                if image_path:
+                    with open(image_path, "rb") as f:
+                        files = {"file": ("captcha.png", f.read(), "image/png")}
+                with httpx.Client(base_url=base_url, timeout=args.timeout,
+                                  headers={"Authorization": f"Bearer {api_key}"} if api_key else {}) as c:
+                    r = c.post("/auto", files=files, data=auto_data)
+                    r.raise_for_status()
+                    result = r.json()
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+            except Exception as exc:
+                print(f"خطأ: {exc}")
+
+        elif cmd == "jobs":
+            try:
+                import httpx
+                with httpx.Client(base_url=base_url, timeout=args.timeout,
+                                  headers={"Authorization": f"Bearer {api_key}"} if api_key else {}) as c:
+                    r = c.get("/schedule/jobs")
+                    r.raise_for_status()
+                    jobs = r.json()
+                    print(json.dumps(jobs, ensure_ascii=False, indent=2))
+            except Exception as exc:
+                print(f"خطأ: {exc}")
+
+        elif cmd == "users":
+            try:
+                import httpx
+                with httpx.Client(base_url=base_url, timeout=args.timeout,
+                                  headers={"Authorization": f"Bearer {api_key}"} if api_key else {}) as c:
+                    r = c.get("/users")
+                    r.raise_for_status()
+                    users = r.json()
+                    print(json.dumps(users, ensure_ascii=False, indent=2))
+            except Exception as exc:
+                print(f"خطأ: {exc}")
+
+        else:
+            print(f"أمر غير معروف: {cmd}. استخدم 'help' للمساعدة.")
+
+    return 0
 
 
 def main(argv=None) -> int:

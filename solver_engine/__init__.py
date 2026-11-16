@@ -1,6 +1,13 @@
 """محرك حل الكبتشا المحلي - جميع المحركات والسجل المركزي."""
 
-from .registry import SolverRegistry, registry, configure_hcaptcha_external, get_hcaptcha_service_stats
+from .registry import (
+    SolverRegistry,
+    registry,
+    configure_hcaptcha_external,
+    get_hcaptcha_service_stats,
+    configure_cnn_solver,
+    get_cnn_stats,
+)
 from .base import CaptchaType, SolverResult, BaseSolver
 from .image import ImageCaptchaSolver, ImageSolveConfig
 from .hcaptcha import HCaptchaSolver, ExternalService
@@ -8,7 +15,7 @@ from .recaptcha import ReCaptchaSolver
 from .turnstile import TurnstileSolver
 from .drag import DragSolver
 from .point import PointSolver
-from .cnn import CNNSolver, CNNConfig
+from .cnn import CNNSolver, CNNModelConfig, CaptchaCNN, CNNTrainer, CaptchaCharPrediction
 from .db import Database
 
 __all__ = [
@@ -16,6 +23,8 @@ __all__ = [
     "registry",
     "configure_hcaptcha_external",
     "get_hcaptcha_service_stats",
+    "configure_cnn_solver",
+    "get_cnn_stats",
     "CaptchaType",
     "SolverResult",
     "BaseSolver",
@@ -28,7 +37,10 @@ __all__ = [
     "DragSolver",
     "PointSolver",
     "CNNSolver",
-    "CNNConfig",
+    "CNNModelConfig",
+    "CaptchaCNN",
+    "CNNTrainer",
+    "CaptchaCharPrediction",
     "Database",
 ]
 
