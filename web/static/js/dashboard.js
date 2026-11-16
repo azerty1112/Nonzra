@@ -144,11 +144,13 @@ async function solveAuto() {
   const sitekey = document.getElementById("captchaSitekey").value;
   if (sitekey) form.append("sitekey", sitekey);
   form.append("human_like", document.getElementById("humanLike").checked);
-  form.append("max_escalations", "2");
+  form.append("max_escalations", document.getElementById("maxEscalations")?.value || "2");
 
   const resEl = document.getElementById("autoResult");
+  const btn = document.querySelector("button[onclick='solveAuto()']");
+  if (btn) btn.disabled = true;
   resEl.style.display = "block";
-  resEl.innerHTML = "جاري الحل التلقائي...";
+  resEl.innerHTML = "جاري التحليل الذكي...";
 
   try {
     const d = await api("/auto", { method: "POST", body: form });
@@ -164,9 +166,19 @@ async function solveAuto() {
     log("الحل التلقائي اكتمل: " + (d.result.success ? "نجاح" : "فشل"), d.result.success ? "ok" : "bad");
     loadStats();
     loadHistory();
+    // Show experience stats
+    try {
+      const exp = await api("/self-improve/stats");
+      document.getElementById("trainConfirmed").textContent = exp.dataset.confirmed || 0;
+      document.getElementById("trainRate").textContent = (exp.dataset.confirmation_rate || 0) + "%";
+    } catch (e) {
+      // ignored
+    }
   } catch (e) {
     resEl.innerHTML = "خطأ: " + escapeHtml(e.message);
     log("فشل الحل التلقائي: " + e.message, "bad");
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 

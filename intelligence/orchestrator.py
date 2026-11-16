@@ -72,6 +72,8 @@ class AutoOrchestrator:
         knowledge_base: Optional[KnowledgeBase] = None,
         experience: Optional[ExperienceEngine] = None,
         external_available: bool = False,
+        nvidia_api_key: Optional[str] = None,
+        nvidia_api_endpoint: Optional[str] = None,
     ) -> None:
         self.registry = registry
         self.monitor = monitor or IntelligentMonitor()
@@ -84,6 +86,8 @@ class AutoOrchestrator:
         seed_knowledge_base(self.knowledge_base)
         self.experience = experience or ExperienceEngine(knowledge_base=self.knowledge_base)
         self.external_available = external_available
+        self._nvidia_api_key = nvidia_api_key or __import__("os").environ.get("NVIDIA_API_KEY", "")
+        self._nvidia_api_endpoint = nvidia_api_endpoint or __import__("os").environ.get("NVIDIA_API_ENDPOINT", "")
 
     def _decode(self, image_bytes: Optional[bytes]) -> Optional[Any]:
         if not image_bytes:
@@ -389,6 +393,50 @@ class AutoOrchestrator:
             threshold=params.get("threshold", "otsu"),
             denoise=params.get("denoise", True),
         )
+
+        # NVIDIA API solving
+        if strategy == "nvidia_api":
+            if not self._nvidia_api_key or not self._nvidia_api_endpoint:
+                trace.append("NVIDIA API: key or endpoint missing, falling back to internal solver")
+                strategy = "prefer_local"
+            else:
+                try:
+                    import requests
+                    payload = {
+                        "captcha_type": ctype.value,
+                        "sitekey": sitekey or '',
+                        "url": url or '',
+                        "action": action or '',
+                    }
+                    headers = {
+                        "Authorization": f"Bearer {self._nvidia_api_key}",
+                        "Content-Type": "application/json",
+                    }
+                    response = requests.post(
+                        self._nvidia_api_endpoint,
+                        headers=headers,
+                        json=payload,
+                        timeout=30,
+                    )
+                    response.raise_for_status()
+                    result_data = response.json()
+                    success = result_data.get("success", False)
+                    solution = result_data.get("solution", "")
+                    confidence = result_data.get("confidence", 0.0)
+                    response_time_ms = result_data.get("response_time_ms", 0)
+                    trace.append(
+                        f"NVIDIA API → نجاح={success}, ثقة={confidence:.2f}, وقت={response_time_ms}ms"
+                    )
+                    return SolverResult(
+                        success=success,
+                        captcha_type=ctype,
+                        response_time_ms=response_time_ms,
+                        confidence=confidence,
+                        error=None if success else f"NVIDIA API error: {result_data}",
+                    )
+                except Exception as e:
+                    trace.append(f"NVIDIA API error: {e}, falling back to internal solver")
+                    strategy = "prefer_local"
 
         try:
             if strategy == "ensemble_with_fallback":
