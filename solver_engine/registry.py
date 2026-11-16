@@ -5,7 +5,7 @@ import time
 
 from .base import BaseSolver, CaptchaType, SolverResult
 from .image import ImageCaptchaSolver, ImageSolveConfig
-from .hcaptcha import HCaptchaSolver
+from .hcaptcha import HCaptchaSolver, ExternalService
 from .recaptcha import ReCaptchaSolver
 from .turnstile import TurnstileSolver
 from .drag import DragSolver
@@ -114,20 +114,31 @@ def configure_hcaptcha_external(
     api_key: Optional[str] = None,
     external_api: Optional[str] = None,
     external_api_type: str = "nonecap",
-    max_retries: int = 5,
-    retry_delay: float = 3.0,
+    external_services: Optional[List[Dict[str, Any]]] = None,
+    max_retries: int = 10,
+    retry_delay: float = 5.0,
+    enable_fallback: bool = True,
 ) -> None:
-    """ضبط حلّال hCaptcha لاستخدام خدمة خارجية مع إعادة المحاولة التلقائية."""
-    # إزالة المحلّات القديمة لـ hCaptcha وإضافة جديد بالإعدادات
-    registry._solvers[CaptchaType.HCAPTCHA] = [
-        HCaptchaSolver(
-            api_key=api_key,
-            external_api=external_api,
-            external_api_type=external_api_type,
-            max_retries=max_retries,
-            retry_delay=retry_delay,
-        )
-    ]
+    """ضبط حلّال hCaptcha لاستخدام خدمات خارجية مع الفولباك التلقائي وإعادة المحاولة حتى النجاح."""
+    hcaptcha_solver = HCaptchaSolver(
+        api_key=api_key,
+        external_api=external_api,
+        external_api_type=external_api_type,
+        external_services=external_services,
+        max_retries=max_retries,
+        retry_delay=retry_delay,
+        enable_fallback=enable_fallback,
+    )
+    registry._solvers[CaptchaType.HCAPTCHA] = [hcaptcha_solver]
 
 
-__all__ = ["SolverRegistry", "registry", "configure_hcaptcha_external"]
+def get_hcaptcha_service_stats() -> List[Dict[str, Any]]:
+    """إرجاع إحصائيات خدمات hCaptcha الخارجية."""
+    solvers = registry.get_solvers(CaptchaType.HCAPTCHA)
+    for s in solvers:
+        if isinstance(s, HCaptchaSolver):
+            return s.get_service_stats()
+    return []
+
+
+__all__ = ["SolverRegistry", "registry", "configure_hcaptcha_external", "get_hcaptcha_service_stats"]

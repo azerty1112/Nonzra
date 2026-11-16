@@ -570,6 +570,32 @@ class NoneCapAsync:
         resp.raise_for_status()
         return resp.json()
 
+    async def solve_url(
+        self,
+        url: str,
+        captcha_type: Optional[str] = None,
+        sitekey: Optional[str] = None,
+        page_url: Optional[str] = None,
+        human_like: bool = False,
+        max_escalations: int = 2,
+    ) -> SolveResult:
+        """تحميل صورة من رابط URL وحلها تلقائيًا."""
+        client = await self._get_client()
+        payload: Dict[str, Any] = {
+            "url": url,
+            "captcha_type": captcha_type,
+            "sitekey": sitekey,
+            "page_url": page_url,
+            "human_like": human_like,
+            "max_escalations": max_escalations,
+        }
+        payload = {k: v for k, v in payload.items() if v is not None}
+        resp = await client.post(f"{self.base_url}/solve/url", json=payload, headers=self._headers())
+        resp.raise_for_status()
+        body = resp.json()
+        result_data = body.get("result", body)
+        return SolveResult.from_dict(result_data)
+
     async def stats(self) -> Dict[str, Any]:
         client = await self._get_client()
         resp = await client.get(f"{self.base_url}/stats", headers=self._headers())

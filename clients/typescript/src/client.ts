@@ -401,6 +401,34 @@ export class NoneCap {
     return (await resp.json()) as Record<string, unknown>;
   }
 
+  async solveUrl(
+    url: string,
+    options?: {
+      captchaType?: string;
+      sitekey?: string;
+      pageUrl?: string;
+      humanLike?: boolean;
+      maxEscalations?: number;
+    }
+  ): Promise<Record<string, unknown>> {
+    const payload: Record<string, unknown> = { url };
+    if (options?.captchaType) payload.captcha_type = options.captchaType;
+    if (options?.sitekey) payload.sitekey = options.sitekey;
+    if (options?.pageUrl) payload.page_url = options.pageUrl;
+    if (options?.humanLike !== undefined) payload.human_like = options.humanLike;
+    if (options?.maxEscalations !== undefined) payload.max_escalations = options.maxEscalations;
+    const resp = await this.request("/solve/url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      throw new Error(`NoneCap error ${resp.status}: ${text}`);
+    }
+    return (await resp.json()) as Record<string, unknown>;
+  }
+
   async health(): Promise<Record<string, unknown>> {
     const resp = await this.request("/health", { method: "GET" });
     if (!resp.ok) throw new Error(`Health check failed ${resp.status}`);

@@ -4,11 +4,12 @@ import base64
 import json
 import uuid
 import time
+import re
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, File, Form, UploadFile, HTTPException, WebSocket, WebSocketDisconnect, Depends, Query
+from fastapi import FastAPI, File, Form, UploadFile, HTTPException, WebSocket, WebSocketDisconnect, Depends, Query, Request
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -39,6 +40,17 @@ from api_server.auth import (
     ApiKeyStore,
 )
 from api_server.webhooks import webhook_deliverer
+
+from solver_engine import (
+    registry,
+    CaptchaType,
+    SolverResult,
+    ImageSolveConfig,
+    Database,
+    configure_hcaptcha_external,
+    get_hcaptcha_service_stats,
+)
+from solver_engine.db import encrypt_value, decrypt_value
 
 from intelligence.training import CaptchaDataset
 from intelligence.self_improver import SelfImprover
@@ -156,8 +168,68 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="NoneCap Clone API", version="0.5.0", lifespan=lifespan)
 app.state.limiter = limiter
 
+# قاعدة بيانات آمنة مع تشفير مفاتيح API
+secure_db = Database()
+
 # خدمة الملفات الثابتة للوحة الويب
 app.mount("/static", StaticFiles(directory="web/static"), name="static")
+
+
+# --------- نظام أمان IP ومعدل طلب متحرك ----------
+
+_IP_BLOCK_LIST: Dict[str, float] = {}
+_REQUEST_TIMESTAMPS: Dict[str, List[float]] = {}
+MAX_REQUESTS_PER_MINUTE = 120
+BLOCK_DURATION_SECONDS = 300  # 5 دقائق
+
+
+def _get_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _is_ip_blocked(ip: str) -> bool:
+    if ip in _IP_BLOCK_LIST:
+        if time.time() - _IP_BLOCK_LIST[ip] < BLOCK_DURATION_SECONDS:
+            return True
+        del _IP_BLOCK_LIST[ip]
+    return False
+
+
+def _block_ip(ip: str) -> None:
+    _IP_BLOCK_LIST[ip] = time.time()
+
+
+def _check_rate_limit(ip: str) -> bool:
+    now = time.time()
+    timestamps = _REQUEST_TIMESTAMPS.get(ip, [])
+    # احتفظ فقط بطلبات الدقيقة الأخيرة
+    timestamps = [t for t in timestamps if now - t < 60.0]
+    if len(timestamps) >= MAX_REQUESTS_PER_MINUTE:
+        _block_ip(ip)
+        return False
+    timestamps.append(now)
+    _REQUEST_TIMESTAMPS[ip] = timestamps
+    return True
+
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next: Any) -> Any:
+    ip = _get_client_ip(request)
+    if _is_ip_blocked(ip):
+        return JSONResponse(
+            status_code=429,
+            content={"error": "تم حظر عنوان IP الخاص بك مؤقتًا بسبب عدد الطلبات الكبير"},
+        )
+    if not _check_rate_limit(ip):
+        return JSONResponse(
+            status_code=429,
+            content={"error": "تم تجاوز الحد المسموح للطلبات في الدقيقة"},
+        )
+    response = await call_next(request)
+    return response
 
 
 @app.get("/web", response_class=HTMLResponse)
@@ -643,6 +715,54 @@ async def auto_solve(
     return result.to_dict()
 
 
+class URLSolveRequest(BaseModel):
+    url: str
+    captcha_type: Optional[str] = None
+    sitekey: Optional[str] = None
+    page_url: Optional[str] = None
+    human_like: bool = False
+    max_escalations: int = 2
+
+
+@app.post("/solve/url")
+@limiter.limit("30/minute")
+async def solve_url(
+    req: URLSolveRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    """تحميل صورة من رابط URL وحلها تلقائيًا."""
+    _auth(credentials)
+    import asyncio
+    import httpx
+
+    # تحميل الصورة من الرابط
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(req.url)
+            resp.raise_for_status()
+            image_bytes = resp.content
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"فشل تحميل الصورة من الرابط: {exc}")
+
+    result = await asyncio.to_thread(
+        orchestrator.solve,
+        captcha_type=req.captcha_type,
+        image_bytes=image_bytes,
+        sitekey=req.sitekey,
+        url=req.page_url,
+        human_like=req.human_like,
+        max_escalations=req.max_escalations,
+    )
+    db.record_attempt(
+        captcha_type=result.detected_type,
+        success=result.result.success,
+        confidence=result.result.confidence,
+        response_time_ms=result.result.response_time_ms,
+        error=result.result.error,
+    )
+    return result.to_dict()
+
+
 @app.post("/auto/async")
 @limiter.limit("60/minute")
 async def auto_submit(
@@ -1097,6 +1217,11 @@ def _auth(
     api_key = extract_api_key(credentials, x_api_key, api_key_query)
     if not api_key:
         return None  # التجريب محلياً دون مفتاح
+    # أولاً تحقق من المفتاح في قاعدة البيانات الآمنة (مشفّر)
+    key_info = secure_db.verify_api_key(api_key)
+    if key_info:
+        return key_info
+    # fallback إلى المتجر في الذاكرة (للتوافق مع التكوين القديم)
     info = api_key_store.validate(api_key)
     if not info:
         raise HTTPException(status_code=401, detail="مفتاح API غير صالح")

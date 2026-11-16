@@ -1,7 +1,32 @@
-"""قاعدة بيانات SQLite لتخزين المحاولات، الإحصائيات، ومفاتيح API (اختيارية عند sqlalchemy)."""
+"""قاعدة بيانات SQLite/PostgreSQL لتخزين المحاولات، الإحصائيات، ومفاتيح API (اختيارية عند sqlalchemy)."""
 
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
+import base64
+import os
+import json
+
+try:
+    from cryptography.fernet import Fernet
+
+    _CRYPTO_AVAILABLE = True
+except Exception:  # noqa: BLE001
+    _CRYPTO_AVAILABLE = False
+
+    class Fernet:  # type: ignore[no-redef, misc]
+        @staticmethod
+        def generate_key() -> bytes:
+            return b"dummy-key"
+
+        def __init__(self, key: Any) -> None:
+            pass
+
+        def encrypt(self, data: bytes) -> bytes:
+            return data
+
+        def decrypt(self, data: bytes) -> bytes:
+            return data
+
 
 try:
     from sqlalchemy import (
@@ -28,6 +53,34 @@ except Exception:  # noqa: BLE001
     class Session:  # type: ignore[no-redef]
         pass
 
+
+def _get_encryption_key() -> bytes:
+    """يُعيد مفتاح تشفير من متغير البيئة أو يُنشئ مفتاحاً مؤقتاً."""
+    env_key = os.environ.get("NONECAP_ENCRYPTION_KEY")
+    if env_key:
+        return env_key.encode("utf-8")
+    return Fernet.generate_key()
+
+
+def encrypt_value(value: str) -> str:
+    """يُشفّر قيمة نصية باستخدام Fernet."""
+    if not _CRYPTO_AVAILABLE or not value:
+        return value
+    f = Fernet(_get_encryption_key())
+    return base64.b64encode(f.encrypt(value.encode("utf-8"))).decode("utf-8")
+
+
+def decrypt_value(value: Optional[str]) -> Optional[str]:
+    """يُفكّ تشفير قيمة نصية."""
+    if not _CRYPTO_AVAILABLE or not value:
+        return value
+    try:
+        f = Fernet(_get_encryption_key())
+        return f.decrypt(base64.b64decode(value.encode("utf-8"))).decode("utf-8")
+    except Exception:  # noqa: BLE001
+        return value
+
+
 if _SA_AVAILABLE:
 
     class SolveAttempt(Base):  # type: ignore[valid-type, misc]
@@ -45,18 +98,35 @@ if _SA_AVAILABLE:
         __tablename__ = "api_keys"
 
         id = Column(Integer, primary_key=True, index=True)
-        key_hash = Column(String, unique=True, nullable=False, index=True)
+        key_id = Column(String, unique=True, nullable=False, index=True)
+        key_hash_encrypted = Column(Text, nullable=False)  # مشفر
         name = Column(String, nullable=True)
         is_active = Column(Boolean, default=True, nullable=False)
+        created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+        rate_limit_per_minute = Column(Integer, default=60, nullable=False)
+
+    class UsageLog(Base):  # type: ignore[valid-type, misc]
+        __tablename__ = "usage_logs"
+
+        id = Column(Integer, primary_key=True, index=True)
+        key_id = Column(String, index=True, nullable=False)
+        endpoint = Column(String, nullable=False)
+        ip_address = Column(String, nullable=True)
         created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
 
 
 class Database:
-    def __init__(self, db_url: str = "sqlite:///nonecap_clone.db") -> None:
-        self.db_url = db_url
+    """قاعدة بيانات تدعم SQLite افتراضياً وPostgreSQL عند توفير رابط اتصال."""
+
+    def __init__(self, db_url: Optional[str] = None) -> None:
+        self.db_url = db_url or os.environ.get("DATABASE_URL", "sqlite:///nonecap_clone.db")
         self._available = _SA_AVAILABLE
+        self._crypto = _CRYPTO_AVAILABLE
         if self._available:
-            self.engine = create_engine(db_url, connect_args={"check_same_thread": False})
+            connect_args: Dict[str, Any] = {}
+            if self.db_url.startswith("sqlite"):
+                connect_args = {"check_same_thread": False}
+            self.engine = create_engine(self.db_url, connect_args=connect_args)
             Base.metadata.create_all(self.engine)
             self.SessionLocal = sessionmaker(bind=self.engine, autoflush=False)  # type: ignore[assignment]
 
@@ -124,6 +194,88 @@ class Database:
         finally:
             db.close()
 
+    def add_api_key(
+        self,
+        key_id: str,
+        api_key: str,
+        name: Optional[str] = None,
+        rate_limit_per_minute: int = 60,
+    ) -> None:
+        """يُضيف مفتاح API مع تشفير المفتاح الخام."""
+        if not self._available:
+            return
+        encrypted_hash = encrypt_value(api_key)
+        db = self.session()
+        try:
+            existing = db.query(APIKey).filter(APIKey.key_id == key_id).first()  # type: ignore[attr-defined]
+            if existing:
+                existing.key_hash_encrypted = encrypted_hash
+                existing.name = name or existing.name
+                existing.is_active = True
+                existing.rate_limit_per_minute = rate_limit_per_minute
+            else:
+                db.add(
+                    APIKey(  # type: ignore[name-defined]
+                        key_id=key_id,
+                        key_hash_encrypted=encrypted_hash,
+                        name=name or "",
+                        is_active=True,
+                        rate_limit_per_minute=rate_limit_per_minute,
+                    )
+                )
+            db.commit()
+        finally:
+            db.close()
+
+    def verify_api_key(self, api_key: str) -> Optional[Dict[str, Any]]:
+        """يحقق من مفتاح API ويعيد معلوماته إذا كان صالحاً."""
+        if not self._available:
+            return None
+        db = self.session()
+        try:
+            rows = db.query(APIKey).filter(APIKey.is_active == True).all()  # type: ignore[attr-defined]
+            for row in rows:
+                decrypted = decrypt_value(row.key_hash_encrypted)
+                if decrypted == api_key:
+                    return {
+                        "key_id": row.key_id,
+                        "name": row.name,
+                        "is_active": row.is_active,
+                        "rate_limit_per_minute": row.rate_limit_per_minute,
+                    }
+            return None
+        finally:
+            db.close()
+
+    def log_usage(self, key_id: str, endpoint: str, ip_address: Optional[str] = None) -> None:
+        """يسجل استخدام نقطة نهاية لمراقبة المعدل."""
+        if not self._available:
+            return
+        db = self.session()
+        try:
+            db.add(UsageLog(key_id=key_id, endpoint=endpoint, ip_address=ip_address))  # type: ignore[name-defined]
+            db.commit()
+        finally:
+            db.close()
+
+    def get_usage_count(self, key_id: str, endpoint: str, minute_window: int) -> int:
+        """يعيد عدد الاستخدامات في نافذة زمنية."""
+        if not self._available:
+            return 0
+        db = self.session()
+        try:
+            since = datetime.now(timezone.utc)  # تبسيط: يمكن تحسينه بنافذة زمنية حقيقية
+            count = (
+                db.query(func.count(UsageLog.id))  # type: ignore[attr-defined]
+                .filter(UsageLog.key_id == key_id)
+                .filter(UsageLog.endpoint == endpoint)
+                .scalar()
+                or 0
+            )
+            return int(count)
+        finally:
+            db.close()
+
 
 class _DummySession:
     def add(self, obj: Any) -> None:
@@ -154,3 +306,12 @@ class _DummyQuery:
 
     def first(self) -> Any:
         return None
+
+
+__all__ = [
+    "Database",
+    "encrypt_value",
+    "decrypt_value",
+    "Base",
+    "Session",
+]
