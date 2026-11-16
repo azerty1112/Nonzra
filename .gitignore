@@ -18,3 +18,7 @@ api_keys.json
 training_data.json
 node_modules/
 .cli-history
+knowledge_base.json
+training_data.json
+api_keys.json
+nonecap_clone.db
