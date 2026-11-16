@@ -67,11 +67,23 @@ class IntelligentMonitor:
         # إرسال التنبيهات عبر الويب هوك (لا نعيق التنفيذ)
         for alert in new_alerts:
             if alert.level in self.alert_on_levels:
-                try:
-                    asyncio.create_task(self._send_alert_async(alert))
-                except Exception:  # noqa: BLE001
-                    self.send_alert_sync(alert)
+                self._send_alert_fire_and_forget(alert)
         return new_alerts
+
+    def _send_alert_fire_and_forget(self, alert: Alert) -> None:
+        """إرسال تنبيه دون حظر التنفيذ، يعمل مع أو بدون حلقة أحداث."""
+        if not _HTTPX_AVAILABLE or not (self.discord_webhook_url or self.alert_webhook_url):
+            return
+        try:
+            # محاولة إنشاء مهمة في الحلقة الحالية
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(self._send_alert_async(alert))
+            else:
+                asyncio.run(self._send_alert_async(alert))
+        except Exception:  # noqa: BLE001
+            # إذا فشل كل شيء، نتجاهل الصمتاً لأن التنبيه ليس أمراً حيوياً
+            pass
 
     def _prune(self) -> None:
         cutoff = datetime.now(timezone.utc) - self.window
@@ -150,16 +162,6 @@ class IntelligentMonitor:
                         await client.post(url, json=payload)
             except Exception:  # noqa: BLE001
                 pass  # لا نريد أن يعيق إرسال التنبيه العمليات الرئيسية
-
-    def send_alert_sync(self, alert: Alert) -> None:
-        """إرسال تنبيه بشكل متزامن (للوظائف غير غير المتزامنة)."""
-        if not _HTTPX_AVAILABLE:
-            return
-        import asyncio
-        try:
-            asyncio.run(self._send_alert_async(alert))
-        except Exception:
-            pass
 
     def report(self) -> Dict[str, Any]:
         self._prune()

@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, File, Form, UploadFile, HTTPException, WebSocket, WebSocketDisconnect, Depends, Query, Request
+from fastapi import FastAPI, File, Form, UploadFile, HTTPException, WebSocket, WebSocketDisconnect, Depends, Query, Request, Body
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -715,19 +715,9 @@ async def auto_solve(
     return result.to_dict()
 
 
-class URLSolveRequest(BaseModel):
-    url: str
-    captcha_type: Optional[str] = None
-    sitekey: Optional[str] = None
-    page_url: Optional[str] = None
-    human_like: bool = False
-    max_escalations: int = 2
-
-
-@app.post("/solve/url")
-@limiter.limit("30/minute")
+@app.post("/captcha-solve/url")
 async def solve_url(
-    req: URLSolveRequest,
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Dict[str, Any]:
     """تحميل صورة من رابط URL وحلها تلقائيًا."""
@@ -735,10 +725,26 @@ async def solve_url(
     import asyncio
     import httpx
 
+    # قراءة جسم الطلب
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="جسم الطلب غير صالح (JSON مطلوب)")
+
+    url = body.get("url")
+    captcha_type = body.get("captcha_type")
+    sitekey = body.get("sitekey")
+    page_url = body.get("page_url")
+    human_like = body.get("human_like", False)
+    max_escalations = body.get("max_escalations", 2)
+
+    if not url:
+        raise HTTPException(status_code=400, detail="حقل url مطلوب")
+
     # تحميل الصورة من الرابط
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(req.url)
+            resp = await client.get(url)
             resp.raise_for_status()
             image_bytes = resp.content
     except Exception as exc:  # noqa: BLE001
@@ -746,12 +752,12 @@ async def solve_url(
 
     result = await asyncio.to_thread(
         orchestrator.solve,
-        captcha_type=req.captcha_type,
+        captcha_type=captcha_type,
         image_bytes=image_bytes,
-        sitekey=req.sitekey,
-        url=req.page_url,
-        human_like=req.human_like,
-        max_escalations=req.max_escalations,
+        sitekey=sitekey,
+        url=page_url,
+        human_like=human_like,
+        max_escalations=max_escalations,
     )
     db.record_attempt(
         captcha_type=result.detected_type,
@@ -1229,3 +1235,16 @@ def _auth(
         raise HTTPException(status_code=429, detail="تم تجاوز الحد المسموح للمفتاح")
     api_key_store.record_usage(info["key_id"])
     return info
+
+@app.post("/test-simple-request")
+async def test_simple_request(request: Request):
+    body = await request.json()
+    return {"received": body, "method": request.method}
+
+@app.post("/test-with-deps")
+async def test_with_deps(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+):
+    body = await request.json()
+    return {"received": body, "auth": bool(credentials)}
