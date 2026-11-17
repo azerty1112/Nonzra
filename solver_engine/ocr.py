@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -164,6 +164,7 @@ def read_text(
     ensemble: Optional[bool] = None,
     expected_len: Optional[int] = None,
     level: str = "balanced",
+    order: Optional[Sequence[str]] = None,
 ) -> OcrResult:
     """يقرأ النص من صورة بأفضل محرّك متاح، مع تجميع تكيّفي عند الحاجة.
 
@@ -177,6 +178,8 @@ def read_text(
             (تجميع فقط إذا كانت القراءة الواحدة ضعيفة أو مشكوكة الطول).
         expected_len: طول النص المتوقّع إن عُرف (يرفع دقة التجميع).
         level: عمق التجميع ``fast``/``balanced``/``max``.
+        order: ترتيب طرق عرض مفروض (يستخدمه التكرار الذكي: كل محاولة تبدأ
+            من طريقة مختلفة حتى لا نكرّر نفس القراءة).
     """
     import time as _time
     from . import ocr_plus
@@ -192,13 +195,14 @@ def read_text(
 
     reader = lambda variant: read_text_single(variant, allowlist=allowlist)  # noqa: E731
     plan = _plan(image, level)
+    preferred = order if order else (plan.strategies if plan else None)
     outcome = ocr_plus.ensemble_read(
         image,
         reader,
         charset=charset,
         expected_len=expected_len,
         level=level,
-        order=plan.strategies if plan else None,
+        order=preferred,
     )
     _learn_from_plan(plan, outcome, expected_len)
     if not outcome.text:
@@ -304,6 +308,7 @@ def read_text_bytes(
     expected_len: Optional[int] = None,
     ensemble: Optional[bool] = None,
     level: str = "balanced",
+    order: Optional[Sequence[str]] = None,
 ) -> OcrResult:
     """قراءة مباشرة من بايتات صورة."""
     import cv2
@@ -319,6 +324,7 @@ def read_text_bytes(
         expected_len=expected_len,
         ensemble=ensemble,
         level=level,
+        order=order,
     )
 
 

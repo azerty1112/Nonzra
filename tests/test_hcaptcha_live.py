@@ -6,6 +6,7 @@
 
 import json
 import threading
+import time
 
 import cv2
 import numpy as np
@@ -178,7 +179,7 @@ def test_live_solver_reports_rejected_answer(fake_hcaptcha, monkeypatch):
     monkeypatch.setattr(
         hcaptcha_live,
         "_read_text_detailed",
-        lambda data, expected_len=None: {
+        lambda data, expected_len=None, deep=False, order=None: {
             "text": "WRONG9",
             "confidence": 0.9,
             "engine": "stub",
@@ -193,8 +194,9 @@ def test_live_solver_reports_rejected_answer(fake_hcaptcha, monkeypatch):
     assert result.metadata["attempts"] and result.metadata["attempts"][0]["answer"] == "WRONG9"
     assert result.metadata["last_certainty"] > 0
     # المحلّل يعيد المحاولة بعد الرفض (max_rounds الافتراضي = 2)
-    assert len(fake_hcaptcha.answers) == 2
-    assert len({a["key"] for a in fake_hcaptcha.answers}) == 2
+    # المحلّل يعيد المحاولة حتى max_rounds (الافتراضي الآن 3)
+    assert len(fake_hcaptcha.answers) >= 2
+    assert len({a["key"] for a in fake_hcaptcha.answers}) == len(fake_hcaptcha.answers)
 
 
 def test_live_solver_handles_multi_image_explicitly(fake_hcaptcha):
@@ -316,3 +318,105 @@ def test_hcaptcha_live_endpoint_solves_against_fake_server(fake_hcaptcha):
     assert data["success"] is True
     assert data["token"] == "P1_TOKEN_OK"
     assert data["answer"] == "AB12"
+
+
+# ---------------------- الاحتياطات (موثوقية) ----------------------
+
+
+def test_solver_opens_breaker_after_repeated_network_failure(monkeypatch):
+    """أعطال متتالية تفتح قاطع الدائرة، فيصبح الفشل فوريًا وواضحًا."""
+    from solver_engine.resilience import get_breaker
+
+    breaker = get_breaker("hcaptcha")
+    breaker.reset()
+    monkeypatch.setattr(hcaptcha_live, "hcaptcha_base_url", lambda: "http://127.0.0.1:1")
+    monkeypatch.setattr(hcaptcha_live, "NETWORK", NetworkConfig(timeout_seconds=1))
+
+    solver = hcaptcha_live.HCaptchaLiveSolver(max_rounds=1)
+    for _ in range(4):
+        result = solver.solve(sitekey="sk", url="https://example.com")
+        assert result.success is False
+
+    blocked = solver.solve(sitekey="sk", url="https://example.com")
+    assert blocked.metadata["stage"] == "circuit_open"
+    assert blocked.metadata["retry_after_seconds"] > 0
+    assert "قاطع الدائرة" in (blocked.error or "")
+    breaker.reset()
+
+
+def test_solver_reports_timeout_explicitly(monkeypatch):
+    """تعلّق الشبكة يتحول إلى فشل صريح بمهلة، لا انتظار أبدي."""
+    from solver_engine.resilience import get_breaker
+
+    get_breaker("hcaptcha").reset()
+    solver = hcaptcha_live.HCaptchaLiveSolver(max_rounds=1, call_timeout=0.2)
+    monkeypatch.setattr(solver, "checksiteconfig", lambda *a, **k: time.sleep(3))
+
+    started = time.time()
+    result = solver.solve(sitekey="sk", url="https://example.com")
+    elapsed = time.time() - started
+
+    assert result.success is False
+    assert elapsed < 2.5
+    assert result.metadata["stage"] == "checksiteconfig"
+    assert "مهلة" in (result.error or "") or "Timeout" in (result.error or "")
+    get_breaker("hcaptcha").reset()
+
+
+def test_solver_rotates_strategies_between_rounds(monkeypatch, fake_hcaptcha):
+    """كل جولة تبدأ من طريقة عرض مختلفة — تنويع لا تكرار أعمى."""
+    orders = []
+
+    def fake_details(data, expected_len=None, deep=False, order=None):
+        orders.append(tuple(order) if order else None)
+        return {"text": "AB12", "confidence": 0.9, "engine": "stub", "plausibility": 1.0}
+
+    monkeypatch.setattr(hcaptcha_live, "_read_text_detailed", fake_details)
+    fake_hcaptcha.expected = "ZZZZ"  # يرفض دائمًا ⇒ نمرّ بكل الجولات
+
+    result = hcaptcha_live.HCaptchaLiveSolver(max_rounds=3).solve(
+        sitekey="sk", url="https://example.com"
+    )
+    assert result.success is False
+    assert len(orders) >= 3
+    assert len(set(orders[:3])) == 3  # ترتيبات مختلفة فعلًا
+
+
+def test_solver_returns_actionable_suggestion_on_rejection(fake_hcaptcha, monkeypatch):
+    monkeypatch.setattr(
+        hcaptcha_live,
+        "_read_text_detailed",
+        lambda data, expected_len=None, deep=False, order=None: {
+            "text": "AB12",
+            "confidence": 0.95,
+            "engine": "stub",
+            "plausibility": 1.0,
+        },
+    )
+    fake_hcaptcha.expected = "ZZZZ"
+    result = hcaptcha_live.HCaptchaLiveSolver(max_rounds=2).solve(
+        sitekey="sk", url="https://example.com"
+    )
+    assert result.success is False
+    assert result.metadata["suggestion"]
+    assert result.metadata["logs"]
+    assert all({"round", "action", "ok"} <= set(log) for log in result.metadata["logs"])
+
+
+def test_live_endpoint_includes_request_id(client):
+    response = client.post(
+        "/hcaptcha/live",
+        json={"sitekey": "sk", "url": "https://example.com", "max_rounds": 1},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["request_id"]
+    assert payload["success"] is False
+
+
+def test_health_resilience_endpoint(client):
+    response = client.get("/health/resilience")
+    assert response.status_code == 200
+    payload = response.json()
+    assert "breakers" in payload and "ocr" in payload
+    assert payload["ocr"]["ensemble"] is True

@@ -2134,7 +2134,8 @@ class HCaptchaLiveRequest(BaseModel):
     sitekey: str = Field(..., description="مفتاح موقع hCaptcha")
     url: str = Field(..., description="صفحة الموقع التي تحتوي الكبتشا")
     host: Optional[str] = Field(None, description="المضيف، افتراضيًا من url")
-    max_rounds: int = Field(2, ge=1, le=5)
+    max_rounds: int = Field(3, ge=1, le=5)
+    deadline_seconds: float = Field(90.0, ge=10, le=300, description="سقف زمني كلي للطلب")
 
 
 @app.get("/hcaptcha/probe", tags=["solving"])
@@ -2158,6 +2159,27 @@ async def ocr_engines(
     """محرّكات قراءة النص المتاحة فعليًا على هذا الجهاز وترتيب الأفضلية."""
     _auth(credentials)
     return engines_status()
+
+
+@app.get("/health/resilience", tags=["system"])
+@limiter.limit("60/minute")
+async def health_resilience(
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> Dict[str, Any]:
+    """حالة الاحتياطات: قواطع الدائرة، تعلّم القراءة، وحالة OCR — كلها في مكان واحد."""
+    _auth(credentials)
+    from intelligence.ocr_policy import get_policy
+    from solver_engine.resilience import breakers_snapshot
+
+    policy = get_policy()
+    return {
+        "breakers": breakers_snapshot(),
+        "ocr": engines_status(),
+        "learning": {
+            "contexts": len(policy.snapshot().get("contexts", {})),
+            "calibration_observations": policy.calibrator.total_observations,
+        },
+    }
 
 
 @app.get("/ocr/policy", tags=["system"])
@@ -2220,12 +2242,47 @@ async def hcaptcha_live_solve(
     غير مضمّنة، فيعيد فشلًا صريحًا مع السبب.
     """
     _auth(credentials)
+    import uuid
+
+    from solver_engine.resilience import TimeoutExceeded
     from solver_engine.hcaptcha_live import HCaptchaLiveSolver
 
-    solver = HCaptchaLiveSolver(max_rounds=req.max_rounds)
-    result = await asyncio.to_thread(
-        solver.solve, sitekey=req.sitekey, url=req.url, host=req.host
+    request_id = uuid.uuid4().hex[:12]
+    solver = HCaptchaLiveSolver(
+        max_rounds=req.max_rounds, deadline_seconds=req.deadline_seconds
     )
+    # سقف زمني صارم على مستوى الطلب أيضًا: لا تعليق حتى لو تجاوز المحلّل مهلته
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(
+                solver.solve, sitekey=req.sitekey, url=req.url, host=req.host
+            ),
+            timeout=req.deadline_seconds + 15,
+        )
+    except (asyncio.TimeoutError, TimeoutExceeded) as exc:
+        from solver_engine.resilience import breakers_snapshot
+
+        db.record_attempt(
+            captcha_type="hcaptcha_live",
+            success=False,
+            confidence=0.0,
+            response_time_ms=int(req.deadline_seconds * 1000),
+            error="timeout",
+        )
+        return {
+            "success": False,
+            "token": None,
+            "answer": None,
+            "confidence": 0.0,
+            "response_time_ms": int(req.deadline_seconds * 1000),
+            "error": (
+                f"انتهت المهلة القصوى ({req.deadline_seconds:.0f} ثانية) قبل إتمام الحل. "
+                "أعد المحاولة أو ارفع deadline_seconds."
+            ),
+            "request_id": request_id,
+            "metadata": {"stage": "deadline", "breakers": breakers_snapshot()},
+        }
+
     db.record_attempt(
         captcha_type="hcaptcha_live",
         success=result.success,
@@ -2233,7 +2290,7 @@ async def hcaptcha_live_solve(
         response_time_ms=result.response_time_ms,
         error=result.error,
     )
-    return {
+    payload = {
         "success": result.success,
         "token": result.token,
         "answer": result.text,
@@ -2241,7 +2298,11 @@ async def hcaptcha_live_solve(
         "response_time_ms": result.response_time_ms,
         "error": result.error,
         "metadata": result.metadata,
+        "request_id": request_id,
     }
+    if not result.success and result.metadata.get("retry_after_seconds"):
+        payload["retry_after_seconds"] = result.metadata["retry_after_seconds"]
+    return payload
 
 
 # --------- العقل الذاتي: التقرير، التخطيط، والتأمّل ----------

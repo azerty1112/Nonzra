@@ -238,7 +238,13 @@ curl -X POST http://localhost:8000/hcaptcha/live \
 | GET | `/ocr/engines` | المحرّكات المتاحة + التجميع + تحليل الحروف |
 | GET | `/ocr/policy` | ما تعلّمته السياسة: أداء كل طريقة عرض لكل سياق + معايرة الثقة |
 | POST | `/ocr/policy/save` | حفظ التعلّم على القرص الآن |
-| POST | `/ocr/bench` | `{count, level, seed}` → قياس دقة فعلي على مجموعة ثابتة |
+| POST | `/ocr/bench` | `{count, level, seed, tier}` → قياس دقة فعلي على مجموعة ثابتة |
+| GET | `/health/resilience` | قواطع الدائرة + حالة OCR + حجم التعلّم |
+
+`POST /hcaptcha/live` يقبل الآن `max_rounds` (1–5، افتراضي 3) و`deadline_seconds`
+(10–300، افتراضي 90)، ويُرجع `request_id` للاقتفاء. كل فشل يحمل `metadata.logs`
+(سجل كل جولة)، `metadata.suggestion` (خطوة تالية قابلة للتنفيذ)، و
+`retry_after_seconds` عند فتح قاطع الدائرة.
 
 ```bash
 python -m solver_engine.bench --count 20 --compare

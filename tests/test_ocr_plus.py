@@ -80,12 +80,13 @@ def test_normalize_text_maps_confusable_characters():
 
 def test_variants_respect_level_and_order():
     image = _text_image("AB12")
-    fast = ocr_plus.variants(image, level="fast")
-    assert [name for name, _ in fast] == ["padded"]
+    # القياس اختار "crop_pad" كأفضل طريقة مفردة (75% مقابل 67% للحشو وحده)
+    fast = [name for name, _ in ocr_plus.variants(image, level="fast")]
+    assert fast == ["crop_pad"]
     balanced = [name for name, _ in ocr_plus.variants(image, level="balanced")]
-    assert balanced[0] == "padded" and len(balanced) >= 3
+    assert balanced[0] == "crop_pad" and len(balanced) >= 3
     ordered = [name for name, _ in ocr_plus.variants(image, level="balanced", order=["upscaled"])]
-    assert ordered[0] == "upscaled" and "padded" in ordered
+    assert ordered[0] == "upscaled" and "crop_pad" in ordered
 
 
 # ---------------------- التصويت ----------------------

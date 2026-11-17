@@ -277,6 +277,7 @@ nonecap-clone/
 │   ├── ocr.py                  # OCR موحّد: RapidOCR ← Tesseract ← قالب + تجميع تكيّفي
 │   ├── ocr_plus.py             # تطبيع بصري، تحليل حروف، وتصويت بين طرق العرض
 │   ├── bench.py                # مقياس دقة قابل للتشغيل (نفس البذرة ⇒ نفس الرقم)
+│   ├── resilience.py           # مهلة صارمة، قاطع دائرة، وتنويع المحاولات
 │   ├── net.py                  # إعدادات الشبكة/الوكيل للاستدعاءات الخارجية
 │   ├── recaptcha.py            # reCAPTCHA v2/v3
 │   ├── turnstile.py            # Cloudflare Turnstile

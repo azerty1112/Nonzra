@@ -1,18 +1,22 @@
-"""قراءة عميقة للصور النصية: تطبيع، تصحيح أخطاء متوقّعة، وتصويت بين طرق عرض.
+"""قراءة عميقة للصور النصية: تطبيع، اختيار طريقة عرض، وتصعيد تكيّفي.
 
-مبني على قياسات فعلية على مجموعة كبتشا صعبة (حواف ملتصقة، خلفية داكنة، ضوضاء،
-تدوير، خطوط تشويش). الخلاصة المقيسة:
+كل ما هنا مبني على قياس فعلي داخل المستودع (``solver_engine/bench.py``)، لا على
+افتراض. الخلاصة المقيسة — بما فيها ما خالف التوقّع:
 
-- **الحشو (padding) هو أكبر مكسب**: نموذج كشف النص في RapidOCR يهمل الحروف
-  الملتصقة بحافة الصورة. إضافة 12 بكسل حشو بيضاء رفعت الدقة من 9/20 إلى 13/20.
-- **التدوير والبنرية القوية يضرّان** غالبًا على كبتشا قصيرة: يحذفان شرطات رفيعة
-  من الحروف. لذلك لا تُستخدم إلا كخيار أخير عند فشل القراءة الأساسية كليًا.
-- **التصويت بين عدّة طرق عرض آمنة** يرفع الدقة دون إبطاء كبير، لكنه لا يُصلح
-  خطأً تتفق عليه كل الطرق؛ لذا نستخدم أيضًا مؤشرات مستقلة عن المحرّك
-  (تغطية الحبر أفقيًا، عدد المكوّنات) لخفض الثقة أو لرفعها.
-- **الثقة الخام للمحرّك متفائلة**: قراءة ناقصة قد تحمل ثقة 0.99. لذلك نُعاقب
-  الثقة عندما يقل النص المقروء عمّا يكشفه تحليل الصورة، فيصبح القرار الآلي
-  (أعيد المحاولة أم اقبل؟) مبنيًا على معلومة صحيحة.
+- **القصّ إلى الحبر + حشو كبير (``crop_pad``) أفضل طريقة مفردة**: 75% على
+  مجموعة واقعية، مقابل 67% للحشو وحده و54% للتكبير. الحشو وحده كان أكبر مكسب
+  سابق (45% ← 65% على المجموعة القاسية)، لكن القصّ يتفوّق عليه.
+- **التصويت بين عدّة طرق يضرّ إن أُجبر دائمًا**: 71% مقابل 75% للمفردة، لأن
+  القراءات الضعيفة ناقصة الحروف فتصوّت للنص الأقصر. الحل المقيس: اقرأ مرة
+  واحدة، ولا تتوسّع إلا عند انخفاض الثقة **أو** تناقض عدد الحروف مع الصورة
+  (رفع ذلك 14/24 ← 17/24).
+- **التدوير والبنرية القوية وإزالة الخطوط مدمّرة**: إزالة الخطوط أعطت 12%
+  فقط لأنها تحذف ضربات الحروف. لذلك هي آخر الخيارات.
+- **تقدير عدد الحروف لا يفصل الصحيح عن الخطأ** (فصل ≈ 0.00): يُستعمل فقط
+  كإشارة تناقض صارخ لتفعيل إعادة القراءة، **لا** لمعايرة الثقة.
+- **توافق طرق العرض هو الإشارة الصادقة للثقة**: 0.73 للصحيح مقابل 0.57 للخطأ.
+- **الثقة الخام متفائلة**: قراءة ناقصة قد تحمل 0.99؛ لذلك تُعاير بما نعرفه
+  فعلًا (التوافق) ويتعلّم النظام الباقي من قبول/رفض hCaptcha نفسه.
 
 كل شيء هنا numpy + OpenCV فقط — بلا أي نموذج خارجي أو خدمة.
 """
@@ -123,13 +127,29 @@ def pad_for_ocr(image: np.ndarray, pad: int = 12, value: int = 255) -> np.ndarra
     return cv2.copyMakeBorder(gray, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=value)
 
 
-def prepare(image: np.ndarray, pad: int = 12, crop: bool = False, scale: float = 1.0) -> np.ndarray:
-    """المعالجة القياسية: توحيد قطبية ← قصّ اختياري ← تكبير اختياري ← حشو."""
+def prepare(
+    image: np.ndarray,
+    pad: int = 12,
+    crop: bool = False,
+    scale: float = 1.0,
+    stretch_y: float = 1.0,
+) -> np.ndarray:
+    """المعالجة القياسية: توحيد قطبية ← قصّ اختياري ← تكبير ← حشو.
+
+    ``stretch_y`` يمطّ الصورة عموديًا فقط. مقيس أنه يفصل الحروف الملتحمة
+    أفقيًا (مثل ``MG``) لأن الشبكة ترى فجوة رأسية أوضح — رفع هذه الحالة من
+    خطأ إلى صحيح في القياس، بينما تمديد الحشو الأكبر لم يفعل شيئًا.
+    """
     gray = normalize_polarity(image)
     if crop:
         gray = crop_to_ink(gray)
     if scale and abs(scale - 1.0) > 0.01:
         gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    if stretch_y and abs(stretch_y - 1.0) > 0.01:
+        height, width = gray.shape[:2]
+        gray = cv2.resize(
+            gray, (width, max(1, int(height * stretch_y))), interpolation=cv2.INTER_CUBIC
+        )
     return pad_for_ocr(gray, pad=pad)
 
 
@@ -245,23 +265,32 @@ def visual_glyph_count(image: np.ndarray) -> int:
 
 _RENDERERS: Dict[str, Callable[[np.ndarray], np.ndarray]] = {
     "padded": lambda image: prepare(image, pad=12),
-    "padded_cropped": lambda image: prepare(image, pad=12, crop=True),
+    # أفضل طريقة مقيسة للصور الواقعية: قصّ الحبر ثم حشو كبير (81% مقابل 75%)
+    "crop_pad": lambda image: prepare(image, pad=30, crop=True),
+    "crop_pad_tall": lambda image: prepare(image, pad=24, crop=True, stretch_y=1.8),
     "padded_8": lambda image: prepare(image, pad=8),
     "upscaled": lambda image: prepare(image, pad=10, scale=1.8),
+    "padded_cropped": lambda image: prepare(image, pad=12, crop=True),
     "clahe": lambda image: pad_for_ocr(normalize_contrast(image), pad=12),
     "deskewed": lambda image: pad_for_ocr(rotate(image, deskew_angle(image)), pad=12),
     "lines_removed": lambda image: pad_for_ocr(remove_thin_lines(binarize_otsu(image)), pad=12),
 }
 
-# ترتيب كل مستوى: الأول هو الأرخص والأكثر أمانًا دائمًا
+# ترتيب كل مستوى: الأول هو الأرخص والأكثر أمانًا دائمًا.
+# ``lines_removed`` في آخر ``max`` فقط: القياس أظهر أنه مدمّر (12% دقة) لأنه
+# يحذف ضربات الحروف نفسها؛ أُبقي للصور المليئة بخطوط طويلة فقط.
+# القياس على مجموعة واقعية (24 صورة): أفضل طريقة مفردة هي ``crop_pad``
+# (75%، 18/24) وتتفوّق على دمج عدّة طرق (67–71%)، لأن القراءات الضعيفة
+# تسحب التصويت. لذلك نبدأ بها، ونتوسّع فقط إذا كانت الثقة منخفضة.
 LEVEL_ORDER: Dict[str, List[str]] = {
-    "fast": ["padded"],
-    "balanced": ["padded", "padded_cropped", "padded_8", "upscaled"],
+    "fast": ["crop_pad"],
+    "balanced": ["crop_pad", "padded", "crop_pad_tall", "upscaled"],
     "max": [
+        "crop_pad",
         "padded",
-        "padded_cropped",
-        "padded_8",
+        "crop_pad_tall",
         "upscaled",
+        "padded_8",
         "clahe",
         "deskewed",
         "lines_removed",
@@ -540,7 +569,7 @@ def ensemble_read(
     charset: Optional[str] = None,
     expected_len: Optional[int] = None,
     level: str = "balanced",
-    min_confidence: float = 0.94,
+    min_confidence: float = 0.9,
     time_budget_ms: float = 8000.0,
     stop_on_perfect: bool = True,
     order: Optional[Sequence[str]] = None,
@@ -573,15 +602,16 @@ def ensemble_read(
         votes.append(Vote(text, confidence, name))
 
         best_text, best_conf, agreed = vote(votes, charset=charset, expected_len=expected_len)
-        agree_ratio = support(votes, best_text, charset)
-        # توقّف مبكر: إما ثقة شديدة جدًا من قراءة واحدة، أو توافق طريقتين
-        # فأكثر بثقة جيدة — كلاهما إشارة مقيسة، لا افتراض.
-        if stop_on_perfect:
-            if best_conf >= 0.995 or (
-                best_conf >= min_confidence and agreed >= 2 and agree_ratio >= 0.6
-            ):
-                notes.append("early_stop")
-                break
+        # إشارة «الشكل»: هل عدد الحروف المقروءة يوافق عدد الحروف المرئية؟
+        # ليست معايرةً للثقة (سبق أن قِسنا أنها لا تفصل)، لكنها كافية لتفعيل
+        # إعادة القراءة عند تناقض صارخ (نص أقصر من المرئي بفارق كبير).
+        consistent = plausibility(image, best_text) >= 0.9
+        # توقّف مبكر: قراءة أولى بثقة جيدة **ومتّسقة مع شكل الصورة** ⇒ لا داعي
+        # للتصويت. القياس أظهر أن تكرار القراءة يضرّ 5 نقاط (14/24 ← 9/24)،
+        # وأن باقي الطرق تُقرأ غالبًا ناقصة، فتصويت الأغلبية يختارها.
+        if stop_on_perfect and best_conf >= min_confidence and consistent:
+            notes.append("early_stop")
+            break
 
     if not votes:
         return EnsembleResult("", 0.0, [], 0, tried, f"ensemble:{level}")

@@ -25,6 +25,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .base import BaseSolver, CaptchaType, SolverResult
 from .net import NETWORK, hcaptcha_base_url
+from .resilience import (
+    AttemptLog,
+    TimeoutExceeded,
+    get_breaker,
+    run_with_timeout,
+)
 
 _IMAGE_KEYS = ("image_urls", "images", "image", "image_url")
 
@@ -110,9 +116,42 @@ def _download_image(url: str) -> Optional[bytes]:
 
 OCR_CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
+# ترتيبات مختلفة لطرق العرض — كل جولة تبدأ من طريقة أخرى، فتنويع القراءة
+# بدل تكرار نفس الخطأ. مبني على ما قِيس فعليًا: القصّ+حشو كبير، والقصّ+مطّ
+# عمودي، والقراءة البسيطة المحشوّة.
+ROUND_ORDERS: List[List[str]] = [
+    ["crop_pad", "padded", "crop_pad_tall", "upscaled"],
+    ["padded", "crop_pad_tall", "upscaled", "crop_pad"],
+    ["crop_pad_tall", "upscaled", "crop_pad", "padded"],
+    ["upscaled", "crop_pad", "padded", "crop_pad_tall"],
+]
+
+
+def _retry_suggestion(attempted: List[Dict[str, Any]], last_error: str) -> str:
+    """توصية عملية مبنية على سبب الفشل الفعلي (لا نص عام)."""
+    if not attempted:
+        return "لم تُقرأ أي إجابة. تحقّق من الوكيل/الشبكة ثم أعد المحاولة."
+    certainties = [float(item.get("certainty") or 0.0) for item in attempted]
+    best = max(certainties) if certainties else 0.0
+    if best < 0.4:
+        return (
+            "كل القراءات كانت منخفضة الثقة (الصورة صعبة/مشوّشة). "
+            "أعد الطلب للحصول على تحدٍّ آخر، أو ارفع max_rounds."
+        )
+    if "invalid" in (last_error or "").lower() or "مرفوض" in (last_error or ""):
+        return (
+            "القراءة كانت واثقة لكن hCaptcha رفضتها — غالبًا حرف متشابه بصريًا "
+            "(O/0، I/1، S/5). أعد المحاولة: النظام يضيّق الاحتمالات تلقائيًا "
+            "بعد كل رفض."
+        )
+    return "أعد المحاولة بعد لحظات؛ إن تكرر الفشل راجع السجل في metadata.logs."
+
 
 def _read_text_detailed(
-    data: bytes, expected_len: Optional[int] = None, deep: bool = False
+    data: bytes,
+    expected_len: Optional[int] = None,
+    deep: bool = False,
+    order: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """قراءة كاملة لصورة تحدي مع كل مؤشرات الثقة (قابلة للتفسير والتشخيص).
 
@@ -127,6 +166,7 @@ def _read_text_detailed(
         expected_len=expected_len,
         ensemble=True,
         level="max" if deep else "balanced",
+        order=order,
     )
     payload = result.to_dict()
     payload["text"] = result.text if result.success else None
@@ -201,8 +241,31 @@ class HCaptchaLiveSolver(BaseSolver):
 
     captcha_type = CaptchaType.HCAPTCHA
 
-    def __init__(self, max_rounds: int = 2) -> None:
+    def __init__(
+        self,
+        max_rounds: int = 3,
+        deadline_seconds: float = 120.0,
+        call_timeout: Optional[float] = None,
+    ) -> None:
         self.max_rounds = max(1, max_rounds)
+        # مهلة كل استدعاء شبكي/قراءة (افتراضيًا مهلة الشبكة + هامش)
+        self.call_timeout = call_timeout or max(10.0, NETWORK.timeout_seconds)
+        # سقف زمني كلي: لا يسمح لأي مسار أن يعلّق الطلب إلى الأبد
+        self.deadline_seconds = max(10.0, deadline_seconds)
+
+    # ---------- مساعدات الاحتياط ----------
+
+    def _guard(self, func, *args, timeout: Optional[float] = None, name: str = "call", **kwargs):
+        """ينفّذ استدعاء بمهلة صارمة — يحوّل التعلّق إلى فشل صريح."""
+        return run_with_timeout(
+            func, *args, timeout=timeout or self.call_timeout, name=name, **kwargs
+        )
+
+    @staticmethod
+    def _breaker():
+        return get_breaker(
+            "hcaptcha", failure_threshold=3, recovery_seconds=20.0
+        )
 
     # ---------- بروتوكول hCaptcha ----------
 
@@ -289,20 +352,39 @@ class HCaptchaLiveSolver(BaseSolver):
             )
 
         host = host or self._host_from_url(url)
-        try:
-            config = self.checksiteconfig(sitekey, url, host)
-        except Exception as exc:  # noqa: BLE001
+        breaker = self._breaker()
+        logs: List[AttemptLog] = []
+
+        # 0) قاطع الدائرة: إن كانت الخدمة معطّلة الآن فلا نُهدر وقت المستخدم
+        if not breaker.allow():
+            wait = breaker.wait_seconds
             return SolverResult(
                 success=False,
                 captcha_type=self.captcha_type,
                 error=(
-                    "تعذّر الوصول إلى hCaptcha "
-                    f"({type(exc).__name__}: {exc}). "
-                    "إن كانت الشبكة تحجب نطاق hCaptcha فمرّر وكيلًا: NONECAP_HCAPTCHA_PROXY"
+                    "hCaptcha غير متاحة مؤقتًا (قاطع الدائرة مفتوح بعد أعطال متتالية). "
+                    f"أعد المحاولة بعد ~{wait:.0f} ثانية."
                 ),
                 response_time_ms=int((time.time() - start) * 1000),
-                metadata={"stage": "checksiteconfig", **NETWORK.to_dict()},
+                metadata={
+                    "stage": "circuit_open",
+                    "breaker": breaker.snapshot(),
+                    "retry_after_seconds": round(wait, 1),
+                    **NETWORK.to_dict(),
+                },
             )
+
+        try:
+            config = self._guard(
+                self.checksiteconfig, sitekey, url, host, name="checksiteconfig"
+            )
+            breaker.record_success()
+        except TimeoutExceeded as exc:
+            breaker.record_failure(str(exc))
+            return self._network_failure(start, "checksiteconfig", exc, logs, breaker)
+        except Exception as exc:  # noqa: BLE001
+            breaker.record_failure(f"{type(exc).__name__}: {exc}")
+            return self._network_failure(start, "checksiteconfig", exc, logs, breaker)
 
         if config.get("pass") is True:
             token = _dig(config, "generated_pass_UUID", "pass_token") or ""
@@ -312,7 +394,7 @@ class HCaptchaLiveSolver(BaseSolver):
                 token=token or None,
                 confidence=1.0,
                 response_time_ms=int((time.time() - start) * 1000),
-                metadata={"stage": "checksiteconfig", "no_challenge": True},
+                metadata={"stage": "checksiteconfig", "no_challenge": True, "attempts": []},
             )
 
         req_config = _dig(config, "c", "req") or _dig(config, "req")
@@ -326,19 +408,33 @@ class HCaptchaLiveSolver(BaseSolver):
         attempted: List[Dict[str, Any]] = []
 
         for round_no in range(1, self.max_rounds + 1):
-            try:
-                captcha = self.getcaptcha(sitekey, url, host, req_config, host_token)
-            except Exception as exc:  # noqa: BLE001
-                return SolverResult(
-                    success=False,
-                    captcha_type=self.captcha_type,
-                    error=f"getcaptcha فشل: {exc}",
-                    response_time_ms=int((time.time() - start) * 1000),
-                    metadata={"stage": "getcaptcha"},
+            if time.time() - start > self.deadline_seconds:
+                logs.append(
+                    AttemptLog(round_no, "deadline", False, "انتهت المدة القصوى للطلب")
                 )
+                break
+
+            try:
+                captcha = self._guard(
+                    self.getcaptcha,
+                    sitekey,
+                    url,
+                    host,
+                    req_config,
+                    host_token,
+                    name="getcaptcha",
+                )
+                breaker.record_success()
+            except TimeoutExceeded as exc:
+                breaker.record_failure(str(exc))
+                return self._network_failure(start, "getcaptcha", exc, logs, breaker, attempted)
+            except Exception as exc:  # noqa: BLE001
+                breaker.record_failure(f"{type(exc).__name__}: {exc}")
+                return self._network_failure(start, "getcaptcha", exc, logs, breaker, attempted)
 
             challenge = parse_challenge(captcha)
             if challenge.kind == "unsupported" or not challenge.image_urls:
+                logs.append(AttemptLog(round_no, "parse", False, challenge.kind))
                 return SolverResult(
                     success=False,
                     captcha_type=self.captcha_type,
@@ -347,10 +443,21 @@ class HCaptchaLiveSolver(BaseSolver):
                         f"النوع: {challenge.kind}"
                     ),
                     response_time_ms=int((time.time() - start) * 1000),
-                    metadata={"stage": "parse", "challenge_kind": challenge.kind, "prompt": challenge.prompt},
+                    metadata={
+                        "stage": "parse",
+                        "challenge_kind": challenge.kind,
+                        "prompt": challenge.prompt,
+                        "unsupported": True,
+                        "suggestion": (
+                            "أعد الطلب للحصول على تحدٍّ نصي، أو استخدم مسارًا "
+                            "بخدمة كشف كائنات (غير مضمّن)."
+                        ),
+                        "attempts": [log.to_dict() for log in logs],
+                    },
                 )
 
             if len(challenge.image_urls) > 1:
+                logs.append(AttemptLog(round_no, "parse", False, "multi_image"))
                 return SolverResult(
                     success=False,
                     captcha_type=self.captcha_type,
@@ -359,57 +466,99 @@ class HCaptchaLiveSolver(BaseSolver):
                         "يحتاج كشف كائنات لا يتوفر محليًا"
                     ),
                     response_time_ms=int((time.time() - start) * 1000),
-                    metadata={"stage": "parse", "prompt": challenge.prompt},
+                    metadata={
+                        "stage": "parse",
+                        "prompt": challenge.prompt,
+                        "unsupported": True,
+                        "attempts": [log.to_dict() for log in logs],
+                    },
                 )
 
             if not challenge.key:
+                logs.append(AttemptLog(round_no, "parse", False, "no_key"))
                 return SolverResult(
                     success=False,
                     captcha_type=self.captcha_type,
                     error="لا يوجد مفتاح تحدي في استجابة hCaptcha",
                     response_time_ms=int((time.time() - start) * 1000),
-                    metadata={"stage": "parse"},
+                    metadata={"stage": "parse", "attempts": [log.to_dict() for log in logs]},
                 )
 
             data = _download_image(challenge.image_urls[0])
             if not data:
-                return SolverResult(
-                    success=False,
-                    captcha_type=self.captcha_type,
-                    error="تعذّر تنزيل صورة التحدي (شبكة/وكيل)",
-                    response_time_ms=int((time.time() - start) * 1000),
-                    metadata={"stage": "download", "prompt": challenge.prompt},
-                )
+                logs.append(AttemptLog(round_no, "download", False, "فشل تنزيل الصورة"))
+                last_error = "تعذّر تنزيل صورة التحدي (شبكة/وكيل)"
+                continue  # تحدٍّ جديد قد يحمل صورة أوضح
 
-            # تلميح الطول يُستخدم فقط بعد محاولة مرفوضة (لا نخمّن من العدم)
-            details = _read_text_detailed(
-                data, expected_len=last_expected_len if keep_expected else None
-            )
+            # تنويع مقصود: كل جولة تبدأ من طريقة عرض مختلفة حتى لا نكرّر
+            # نفس الخطأ عندما يعيد الخادم صورة مشابهة.
+            order = ROUND_ORDERS[(round_no - 1) % len(ROUND_ORDERS)]
+            try:
+                details = self._guard(
+                    _read_text_detailed,
+                    data,
+                    expected_len=last_expected_len if keep_expected else None,
+                    deep=round_no >= 3,
+                    order=order,
+                    name="ocr",
+                )
+            except TimeoutExceeded as exc:
+                logs.append(
+                    AttemptLog(round_no, "ocr", False, f"تجاوز مهلة القراءة: {exc}")
+                )
+                last_error = "تعذّر قراءة الصورة في الوقت المحدد"
+                continue
+
             text = details.get("text")
             confidence = float(details.get("confidence") or 0.0)
             engine = str(details.get("engine") or "none")
             if not text:
+                logs.append(AttemptLog(round_no, "ocr", False, "لا نص مقروء"))
                 last_error = "تعذّر قراءة نص التحدي من الصورة"
                 last_engine = engine
-                continue  # محاولة جديدة: تحدٍّ آخر قد يكون أوضح
+                continue
 
-            # إشارات الثقة تُخزَّن حتى لو فشلت المحاولة (تشخيص + تعلّم لاحقًا)
+            certainty = _certainty(details)
             attempted.append(
                 {
                     "round": round_no,
                     "answer": text,
-                    "certainty": round(_certainty(details), 4),
+                    "certainty": round(certainty, 4),
+                    "strategy": details.get("strategy"),
                     "ocr": details,
                 }
             )
-            last_text, last_engine, last_certainty = text, engine, _certainty(details)
+            logs.append(
+                AttemptLog(
+                    round_no,
+                    "ocr",
+                    True,
+                    text,
+                    extra={
+                        "confidence": round(confidence, 4),
+                        "certainty": round(certainty, 4),
+                        "strategy": details.get("strategy"),
+                    },
+                )
+            )
+            last_text, last_engine, last_certainty = text, engine, certainty
 
-            # بوّابة الثقة: إن كانت الثقة المُعايَرة منخفضة جدًا، إعادة القراءة
-            # بعمق أكبر أرخص من إحراق جولة على إجابة منخفضة الاحتمال.
+            # بوّابة الثقة: قراءة غير واثقة تُقرأ مرة أخرى بعمق أكبر قبل
+            # إحراق جولة — إعادة القراءة أرخص من إجابة مرفوضة.
             if round_no < self.max_rounds:
                 probable = _calibrated_probability(details)
                 if probable is not None and probable < 0.35:
-                    deep = _read_text_detailed(data, deep=True, expected_len=None)
+                    try:
+                        deep = self._guard(
+                            _read_text_detailed,
+                            data,
+                            deep=True,
+                            expected_len=None,
+                            order=list(reversed(ROUND_ORDERS[0])),
+                            name="ocr_deep",
+                        )
+                    except Exception:  # noqa: BLE001 - التعميق اختياري
+                        deep = {}
                     if deep.get("text") and deep.get("confidence", 0) > confidence:
                         details, text = deep, deep["text"]
                         confidence = float(deep.get("confidence") or 0.0)
@@ -419,20 +568,42 @@ class HCaptchaLiveSolver(BaseSolver):
                                 "round": round_no,
                                 "answer": text,
                                 "certainty": round(_certainty(details), 4),
+                                "strategy": details.get("strategy"),
                                 "ocr": details,
                                 "escalated": True,
                             }
                         )
+                        logs.append(
+                            AttemptLog(
+                                round_no, "escalate", True, text, extra={"reason": "low_certainty"}
+                            )
+                        )
 
             try:
-                checked = self.checkcaptcha(sitekey, text, challenge.key, host)
+                checked = self._guard(
+                    self.checkcaptcha,
+                    sitekey,
+                    text,
+                    challenge.key,
+                    host,
+                    name="checkcaptcha",
+                )
+                breaker.record_success()
+            except TimeoutExceeded as exc:
+                breaker.record_failure(str(exc))
+                last_error = f"checkcaptcha تجاوز المهلة: {exc}"
+                logs.append(AttemptLog(round_no, "checkcaptcha", False, str(exc)))
+                break
             except Exception as exc:  # noqa: BLE001
+                breaker.record_failure(f"{type(exc).__name__}: {exc}")
                 last_error = f"checkcaptcha فشل: {exc}"
+                logs.append(AttemptLog(round_no, "checkcaptcha", False, str(exc)))
                 break
 
             token = _dig(checked, "generated_pass_UUID", "pass_token") or ""
             if token:
                 _learn(details, accepted=True, answer=text)
+                logs.append(AttemptLog(round_no, "checkcaptcha", True, "token"))
                 return SolverResult(
                     success=True,
                     captcha_type=self.captcha_type,
@@ -447,36 +618,76 @@ class HCaptchaLiveSolver(BaseSolver):
                         "answer": text,
                         "ocr_confidence": round(confidence, 4),
                         "ocr_engine": engine,
-                        "certainty": round(_certainty(details), 4),
+                        "certainty": round(certainty, 4),
                         "ocr": details,
                         "attempts": attempted,
+                        "logs": [log.to_dict() for log in logs],
                     },
                 )
 
             _learn(details, accepted=False, answer=text)
             last_error = str(_dig(checked, "error", "message") or "إجابة مرفوضة")
-            # بعد الرفض: نضيّق مساحة الخطأ باستخدام طول النص المرفوض كتلميح
-            # (hCaptcha النصية أطوالها عادة 4–6) — يرفع دقة المحاولة التالية.
+            logs.append(
+                AttemptLog(round_no, "checkcaptcha", False, last_error, extra={"answer": text})
+            )
+            # بعد الرفض: طول الإجابة المرفوضة معلومة مجانية تُستخدم كتلميح
             keep_expected = len(text) >= 3
             last_expected_len = len(text) if keep_expected else None
 
         attempts_meta = {
             "stage": "checkcaptcha",
             "attempts": attempted,
+            "logs": [log.to_dict() for log in logs],
             "last_answer": last_text,
             "last_engine": last_engine,
             "last_certainty": round(last_certainty, 4),
             "max_rounds": self.max_rounds,
+            "breaker": breaker.snapshot(),
+            "suggestion": _retry_suggestion(attempted, last_error),
         }
-        if attempts_meta["attempts"]:
-            worst = min(attempted, key=lambda item: item.get("certainty", 0.0))
-            attempts_meta["weakest_ocr"] = worst.get("ocr")
+        if attempted:
+            weakest = min(attempted, key=lambda item: item.get("certainty", 0.0))
+            attempts_meta["weakest_ocr"] = weakest.get("ocr")
         return SolverResult(
             success=False,
             captcha_type=self.captcha_type,
             error=f"لم يُقبل الحل: {last_error}" if last_error else "لم يُقبل الحل",
             response_time_ms=int((time.time() - start) * 1000),
             metadata=attempts_meta,
+        )
+
+    def _network_failure(
+        self,
+        start: float,
+        stage: str,
+        exc: BaseException,
+        logs: List[AttemptLog],
+        breaker: Any,
+        attempted: Optional[List[Dict[str, Any]]] = None,
+    ) -> SolverResult:
+        """استجابة فشل شبكي صريحة مع إرشاد قابل للتنفيذ (لا رسالة مبهمة)."""
+        logs.append(AttemptLog(0, stage, False, f"{type(exc).__name__}: {exc}"))
+        blocked = isinstance(exc, (TimeoutExceeded,)) or "SSL" in str(exc) or "Connect" in str(exc)
+        hint = (
+            "الشبكة قد تحجب نطاق hCaptcha (TLS/ConnectError). مرّر وكيلًا: "
+            "NONECAP_HCAPTCHA_PROXY، أو شغّل الخادم على شبكة أخرى."
+            if blocked
+            else "خطأ غير متوقع في الشبكة؛ راجع التفاصيل."
+        )
+        return SolverResult(
+            success=False,
+            captcha_type=self.captcha_type,
+            error=f"تعذّر الوصول إلى hCaptcha في مرحلة {stage} ({type(exc).__name__}: {exc}). {hint}",
+            response_time_ms=int((time.time() - start) * 1000),
+            metadata={
+                "stage": stage,
+                "blocked_likely": blocked,
+                "hint": hint,
+                "breaker": breaker.snapshot(),
+                "attempts": attempted or [],
+                "logs": [log.to_dict() for log in logs],
+                **NETWORK.to_dict(),
+            },
         )
 
     @staticmethod
@@ -490,4 +701,9 @@ class HCaptchaLiveSolver(BaseSolver):
         return await asyncio.to_thread(self.solve, *args, **kwargs)
 
 
-__all__ = ["HCaptchaLiveSolver", "Challenge", "parse_challenge"]
+__all__ = [
+    "HCaptchaLiveSolver",
+    "Challenge",
+    "parse_challenge",
+    "ROUND_ORDERS",
+]
