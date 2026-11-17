@@ -15,7 +15,7 @@
   <img alt="tests" src="https://img.shields.io/badge/tests-106%20passing-22d3ee?style=flat-square">
   <img alt="types" src="https://img.shields.io/badge/captcha%20types-10-38bdf8?style=flat-square">
   <img alt="knowledge" src="https://img.shields.io/badge/knowledge%20cards-17-a78bfa?style=flat-square">
-  <img alt="python" src="https://img.shields.io/badge/python-3.9%2B-3776ab?style=flat-square">
+  <img alt="python" src="https://img.shields.io/badge/python-3.11%2B-3776ab?style=flat-square">
   <img alt="free" src="https://img.shields.io/badge/100%25-free%20·%20no%20limits-34d399?style=flat-square">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-64748b?style=flat-square">
 </p>
@@ -606,7 +606,7 @@ nc.subscribeJob(jobId, (r) => console.log(r));
 
 ## متطلبات النظام
 
-- Python 3.9+
+- Python 3.11+ (المحرّك العصبي rapidocr-onnxruntime لا يدعم ما قبله)
 - Tesseract OCR (للحل النصي)
 - OpenCV, Pillow, NumPy, pytesseract
 - FastAPI, Uvicorn, httpx, pydantic

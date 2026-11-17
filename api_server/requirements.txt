@@ -1,3 +1,4 @@
+# يتطلب Python >= 3.11 (rapidocr-onnxruntime / onnxruntime)
 fastapi>=0.100.0
 uvicorn>=0.23.0
 python-multipart>=0.0.6

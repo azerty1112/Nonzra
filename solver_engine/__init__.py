@@ -1,5 +1,8 @@
 """محرك حل الكبتشا المحلي - جميع المحركات والسجل المركزي."""
 
+# فحص التوافق أولًا: رسالة واضحة بدل فشل غامض على بايثون قديم
+from . import _compat as _compat  # noqa: F401
+
 from .registry import (
     SolverRegistry,
     registry,

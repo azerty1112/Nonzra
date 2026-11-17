@@ -2,7 +2,7 @@
 name = "nonecap-cli"
 version = "0.6.0"
 description = "CLI for NoneCap Clone CAPTCHA solver"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = ["httpx>=0.24.0"]
 
 [project.scripts]
