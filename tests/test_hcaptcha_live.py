@@ -580,3 +580,26 @@ def test_abstain_improves_precision_on_real_batch(monkeypatch):
         == item["label"]
     ) / len(items)
     assert sent_correct / sent >= overall
+
+
+def test_zero_plausibility_is_treated_as_signal_not_absence():
+    """0.0 قيمة مقيسة (فشل واضح) وليست «لا إشارة» — كان `or None` يفلتها."""
+    from solver_engine.abstain import decide
+
+    zero = decide(0.99, text="ABCD", rounds_left=1, plausibility=0.0)
+    missing = decide(0.99, text="ABCD", rounds_left=1, plausibility=None)
+
+    assert zero.send is False
+    assert missing.send is True
+    assert zero.probability < missing.probability
+
+
+def test_expected_len_hint_comes_from_previous_rejection():
+    """الطول المتوقّع يجب أن يأتي من رفض سابق، لا من النص نفسه (فحص ميت)."""
+    import inspect
+
+    from solver_engine import hcaptcha_live
+
+    source = inspect.getsource(hcaptcha_live.HCaptchaLiveSolver.solve)
+    assert "expected_len=len(text)" not in source
+    assert "expected_len = last_expected_len if keep_expected else None" in source

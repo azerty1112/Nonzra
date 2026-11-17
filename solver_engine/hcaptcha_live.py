@@ -589,13 +589,19 @@ class HCaptchaLiveSolver(BaseSolver):
 
             # --------- قرار الإرسال: أُرسل أم أمتنع؟ ---------
             rounds_left = self.max_rounds - round_no
+            # طول متوقّع حقيقي: تلميح الإجابة المرفوضة السابقة، لا طول النص
+            # نفسه (مقارنة الشيء بنفسه فحص ميت كان يُعطي إشارة كاذبة دائمًا).
+            expected_len = last_expected_len if keep_expected else None
+            raw_plausibility = details.get("plausibility")
+            # 0.0 قيمة حقيقية (خطأ واضح)، لا تعني «لا توجد إشارة» ⇒ لا نستخدم `or`
+            plausibility = None if raw_plausibility is None else float(raw_plausibility)
             vote = decide_abstain(
                 confidence=confidence,
                 threshold=threshold_for_round(round_no, self.abstain_threshold),
-                expected_len=len(text),
+                expected_len=expected_len,
                 text=text,
                 rounds_left=rounds_left,
-                plausibility=float(details.get("plausibility") or 0.0) or None,
+                plausibility=plausibility,
             )
             abstained.append(vote)
             # الامتناع يعمل دائمًا (حتى في آخر جولة): قراءة فاشلة لا تُرسل.
