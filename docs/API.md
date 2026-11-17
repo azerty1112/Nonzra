@@ -240,9 +240,12 @@ curl -X POST http://localhost:8000/hcaptcha/live \
 | POST | `/ocr/policy/save` | حفظ التعلّم على القرص الآن |
 | POST | `/ocr/bench` | `{count, level, seed, tier}` → قياس دقة فعلي على مجموعة ثابتة |
 | GET | `/health/resilience` | قواطع الدائرة + حالة OCR + حجم التعلّم |
+| GET | `/training/samples` | حالة عينات التدريب + سياسة الخصوصية المطبقة |
+| DELETE | `/training/samples` | حق الحذف: `?captcha_type=` اختياري ⇒ عدد المحذوف |
 
-`POST /hcaptcha/live` يقبل الآن `max_rounds` (1–5، افتراضي 3) و`deadline_seconds`
-(10–300، افتراضي 90)، ويُرجع `request_id` للاقتفاء. كل فشل يحمل `metadata.logs`
+`POST /hcaptcha/live` يقبل `max_rounds` (1–5، افتراضي 2)، `deadline_seconds`
+(10–300، افتراضي 90)، `allow_abstain` (افتراضي true)، و`abstain_threshold`
+(افتراضي 0.45)، ويُرجع `request_id` للاقتفاء. كل فشل يحمل `metadata.logs`
 (سجل كل جولة)، `metadata.suggestion` (خطوة تالية قابلة للتنفيذ)، و
 `retry_after_seconds` عند فتح قاطع الدائرة.
 

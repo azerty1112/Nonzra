@@ -420,3 +420,163 @@ def test_health_resilience_endpoint(client):
     payload = response.json()
     assert "breakers" in payload and "ocr" in payload
     assert payload["ocr"]["ensemble"] is True
+
+
+# ---------------------- الامتناع (abstain) ----------------------
+
+
+def test_solver_abstains_instead_of_burning_a_round(fake_hcaptcha, monkeypatch):
+    """قراءة منخفضة الثقة ⇒ لا إرسال، وتحدٍّ جديد بدل إحراق محاولة."""
+    monkeypatch.setattr(
+        hcaptcha_live,
+        "_read_text_detailed",
+        lambda data, expected_len=None, deep=False, order=None: {
+            "text": "AB12",
+            "confidence": 0.2,  # منخفضة جدًا
+            "engine": "stub",
+            "plausibility": 1.0,
+        },
+    )
+    solver = hcaptcha_live.HCaptchaLiveSolver(max_rounds=2, allow_abstain=True)
+    result = solver.solve(sitekey="sk", url="https://example.com")
+
+    # الجولة 1 تمتنع (لا إرسال)، والجولة الأخيرة ترسل أفضل ما لديها
+    assert fake_hcaptcha.answers and len(fake_hcaptcha.answers) == 1
+    assert result.metadata["abstentions"]
+    assert result.metadata["abstentions"][0]["send"] is False
+    assert any(log["action"] == "abstain" for log in result.metadata["logs"])
+
+
+def test_solver_sends_last_round_even_when_unsure(fake_hcaptcha, monkeypatch):
+    """في الجولة الأخيرة لا معنى للامتناع: نرسل أفضل ما لدينا."""
+    monkeypatch.setattr(
+        hcaptcha_live,
+        "_read_text_detailed",
+        lambda data, expected_len=None, deep=False, order=None: {
+            "text": "AB12",
+            "confidence": 0.2,
+            "engine": "stub",
+            "plausibility": 1.0,
+        },
+    )
+    result = hcaptcha_live.HCaptchaLiveSolver(max_rounds=1, allow_abstain=True).solve(
+        sitekey="sk", url="https://example.com"
+    )
+    assert len(fake_hcaptcha.answers) == 1
+    assert result.success is True  # AB12 صحيحة في المحاكي
+
+
+def test_abstain_can_be_disabled(fake_hcaptcha, monkeypatch):
+    monkeypatch.setattr(
+        hcaptcha_live,
+        "_read_text_detailed",
+        lambda data, expected_len=None, deep=False, order=None: {
+            "text": "AB12",
+            "confidence": 0.2,
+            "engine": "stub",
+            "plausibility": 1.0,
+        },
+    )
+    fake_hcaptcha.expected = "ZZZZ"
+    solver = hcaptcha_live.HCaptchaLiveSolver(max_rounds=1, allow_abstain=False)
+    result = solver.solve(sitekey="sk", url="https://example.com")
+    assert result.success is False
+    assert len(fake_hcaptcha.answers) == 1  # أرسل رغم انخفاض الثقة
+
+
+def test_single_character_read_is_always_refused(fake_hcaptcha, monkeypatch):
+    """نص بحرف واحد = قراءة فاشلة، حتى لو ادّعى المحرّك ثقة عالية."""
+    monkeypatch.setattr(
+        hcaptcha_live,
+        "_read_text_detailed",
+        lambda data, expected_len=None, deep=False, order=None: {
+            "text": "A",
+            "confidence": 0.99,
+            "engine": "stub",
+            "plausibility": 1.0,
+        },
+    )
+    solver = hcaptcha_live.HCaptchaLiveSolver(max_rounds=2)
+    result = solver.solve(sitekey="sk", url="https://example.com")
+    assert result.success is False
+    assert fake_hcaptcha.answers == []
+
+
+# ---------------------- سياسة الامتناع (وحدة مستقلة) ----------------------
+
+
+def test_abstain_thresholds_and_hard_refusal():
+    from solver_engine.abstain import decide, threshold_for_round
+
+    sure = decide(0.95, text="AB12", expected_len=4, rounds_left=2)
+    unsure = decide(0.2, text="AB12", expected_len=4, rounds_left=2)
+    last_round = decide(0.2, text="AB12", rounds_left=0)
+    single = decide(0.99, text="A", rounds_left=2)
+
+    assert sure.send is True and sure.probability > 0.8
+    assert unsure.send is False and unsure.retry_advice
+    assert last_round.send is True  # لا محاولات ⇒ أرسل أفضل تخمين
+    assert single.send is False  # لكن حرف واحد يُرفض دائمًا
+    # العتبة تتراجع مع الجولات حتى لا نبقى ممتنعين بلا نهاية
+    assert threshold_for_round(1) > threshold_for_round(3)
+    assert threshold_for_round(3) >= 0.2
+
+
+def test_abstain_gate_uses_shape_signal_not_confidence():
+    """القياس أثبت أن الثقة لا تفصل الصحيح عن الخطأ — الشكل هو ما يفصل.
+
+    الأرقام الحقيقية على 24 صورة: الصحيح ثقة 0.95 وشكل 1.00، والخطأ ثقة 0.90
+    وشكل 0.84. أي عتبة على الثقة وحدها ترفض صحيحًا بقدر ما ترفض خطأً.
+    """
+    from solver_engine.abstain import decide
+
+    # ثقة عالية + شكل سليم ⇒ يُرسل
+    good = decide(0.95, text="AB12", expected_len=4, rounds_left=1, plausibility=1.0)
+    # ثقة عالية جدًا + شكل متناقض ⇒ يمتنع (هذا ما فشل خطأً قبل الإصلاح)
+    doubtful = decide(1.0, text="Y7H9D", rounds_left=1, plausibility=0.69)
+
+    assert good.send is True
+    assert doubtful.send is False
+    assert doubtful.probability < good.probability
+    assert doubtful.extra.get("shape_doubt") is True
+
+
+def test_abstain_improves_precision_on_real_batch(monkeypatch):
+    """انحدار: على دفعة حقيقية، الامتناع يرفع الدقة لكل محاولة ولا يخسر صحيحًا."""
+    from solver_engine import bench
+    from solver_engine import ocr_plus as op
+    from solver_engine.abstain import decide
+    from solver_engine.ocr import read_text
+
+    items = bench.dataset(count=8, seed=7, tier="realistic")
+    sent = 0
+    sent_correct = 0
+    abstained_wrong = 0
+    abstained_total = 0
+    for item in items:
+        result = read_text(item["image"], allowlist=op.DEFAULT_CHARSET, level="fast")
+        decision = decide(
+            confidence=result.confidence,
+            text=result.text or "",
+            rounds_left=1,
+            plausibility=result.plausibility,
+        )
+        correct = result.text == item["label"]
+        if decision.send:
+            sent += 1
+            sent_correct += int(correct)
+        else:
+            abstained_total += 1
+            abstained_wrong += int(not correct)
+
+    assert sent > 0
+    # كل ما امتنع عنه النظام لم يكن صحيحًا (هذا هو مكسب الامتناع كله)
+    assert abstained_wrong == abstained_total
+    # والدقة بين ما أُرسل أعلى من الدقة العامة على نفس الدفعة
+    overall = sum(
+        1
+        for item in items
+        if read_text(item["image"], allowlist=op.DEFAULT_CHARSET, level="fast").text
+        == item["label"]
+    ) / len(items)
+    assert sent_correct / sent >= overall

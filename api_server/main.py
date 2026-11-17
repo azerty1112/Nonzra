@@ -224,6 +224,11 @@ async def lifespan(_app: FastAPI):
             mind.save()
         except Exception:  # noqa: BLE001
             pass
+        # كتابة مؤجّلة: نحفظ ما تبقّى من عينات التدريب قبل الإيقاف
+        try:
+            training_dataset.flush()
+        except Exception:  # noqa: BLE001
+            pass
         await scheduled_job_manager.stop_scheduler()
         await worker.stop()
 
@@ -2134,8 +2139,15 @@ class HCaptchaLiveRequest(BaseModel):
     sitekey: str = Field(..., description="مفتاح موقع hCaptcha")
     url: str = Field(..., description="صفحة الموقع التي تحتوي الكبتشا")
     host: Optional[str] = Field(None, description="المضيف، افتراضيًا من url")
-    max_rounds: int = Field(3, ge=1, le=5)
+    max_rounds: int = Field(2, ge=1, le=5)
     deadline_seconds: float = Field(90.0, ge=10, le=300, description="سقف زمني كلي للطلب")
+    allow_abstain: bool = Field(
+        True,
+        description="الامتناع عن إرسال إجابة منخفضة الثقة بدل إحراق محاولة (موصى به)",
+    )
+    abstain_threshold: float = Field(
+        0.45, ge=0.0, le=1.0, description="عتبة الاحتمال الدنيا للإرسال"
+    )
 
 
 @app.get("/hcaptcha/probe", tags=["solving"])
@@ -2159,6 +2171,40 @@ async def ocr_engines(
     """محرّكات قراءة النص المتاحة فعليًا على هذا الجهاز وترتيب الأفضلية."""
     _auth(credentials)
     return engines_status()
+
+
+@app.get("/training/samples", tags=["system"])
+@limiter.limit("60/minute")
+async def training_samples_stats(
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> Dict[str, Any]:
+    """حالة مجموعة عينات التدريب وسياسة الخصوصية المطبّقة فعليًا."""
+    _auth(credentials)
+    return training_dataset.stats()
+
+
+@app.delete("/training/samples", tags=["system"])
+@limiter.limit("30/minute")
+async def training_samples_purge(
+    request: Request,
+    captcha_type: Optional[str] = Query(None, description="حذف نوع محدّد فقط"),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    """حق الحذف: يمحو عينات التدريب (كلها أو لنوع) ويعيد عدد المحذوف.
+
+    يُستخدم عند طلب المستخدم حذف بياناته، أو لتنظيف بيئة اختبار.
+    """
+    _auth(credentials)
+    removed = training_dataset.purge(captcha_type=captcha_type)
+    try:
+        audit_log(
+            action="training_purge",
+            resource="training_samples",
+            details={"captcha_type": captcha_type, "removed": removed},
+        )
+    except Exception:  # noqa: BLE001 - التدقيق لا يجب أن يعطّل الحذف
+        pass
+    return {"purged": removed, "captcha_type": captcha_type, **training_dataset.stats()}
 
 
 @app.get("/health/resilience", tags=["system"])
@@ -2249,7 +2295,10 @@ async def hcaptcha_live_solve(
 
     request_id = uuid.uuid4().hex[:12]
     solver = HCaptchaLiveSolver(
-        max_rounds=req.max_rounds, deadline_seconds=req.deadline_seconds
+        max_rounds=req.max_rounds,
+        deadline_seconds=req.deadline_seconds,
+        allow_abstain=req.allow_abstain,
+        abstain_threshold=req.abstain_threshold,
     )
     # سقف زمني صارم على مستوى الطلب أيضًا: لا تعليق حتى لو تجاوز المحلّل مهلته
     try:
