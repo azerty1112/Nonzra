@@ -603,3 +603,47 @@ def test_expected_len_hint_comes_from_previous_rejection():
     source = inspect.getsource(hcaptcha_live.HCaptchaLiveSolver.solve)
     assert "expected_len=len(text)" not in source
     assert "expected_len = last_expected_len if keep_expected else None" in source
+
+
+def test_abstain_probability_is_bounded_by_learned_acceptance_rate():
+    """قياس: حين يكون النظام مفرط الثقة، التعلّم يخفض الاحتمال فعلاً.
+
+    محاكاة 80 نتيجة حقيقية من hCaptcha (ثقة 0.95 تنجح 40% فقط) خفّضت احتمال
+    0.95 من 0.88 (قبل التعلّم) إلى 0.49 (بعده، معايَر).
+
+    **حد معروف ومقصود:** الانكماش في ``ConfidenceCalibrator`` يسحب كل الثقات
+    نحو المعدل الأساسي، فتصبح الفروق بينها ضيّقة (0.95→0.49 و0.3→0.40).
+    لذلك تبقى المرجعية الحاسمة في هذا المسار هي ``plausibility``، لا الثقة.
+    """
+    import tempfile
+
+    from intelligence.ocr_policy import reset_policy
+    from solver_engine.abstain import _calibrate, decide
+    from solver_engine.hcaptcha_live import _learn
+
+    # سياسة جديدة معزولة: السياسة المشتركة عالميّة وقد تحمل تعلّماً من اختبارات
+    # أخرى، فيصبح عدد المشاهدات غير متوقّع. نبدأ من صفر صراحةً.
+    policy = reset_policy(path=tempfile.mktemp(suffix=".json"))
+    before, was_calibrated = _calibrate(0.95)
+    assert was_calibrated is False
+
+    for index in range(80):
+        _learn(
+            {"confidence": 0.95, "engine": "fake", "strategy": "a:b"},
+            accepted=(index % 10 < 4),
+            answer="ABCD",
+        )
+
+    after, now_calibrated = _calibrate(0.95)
+    assert policy.calibrator.total_observations == 80
+    assert now_calibrated is True
+    # التعلّم خفّض الثقة الزائفة بفارق كبير
+    assert after < before - 0.25
+    assert after < 0.55
+
+    # والاحتمال المحسوب صار محكومًا بمعدل القبول المتعلَّم
+    decision = decide(0.95, text="ABCD", rounds_left=1)
+    assert decision.calibrated is True
+    assert decision.probability < 0.55
+
+    reset_policy(path=tempfile.mktemp(suffix=".json"))  # لا نسرّب التعلّم
