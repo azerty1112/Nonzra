@@ -7,7 +7,6 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/css/dashboard.css">
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
@@ -75,6 +74,14 @@ tr:hover { background: #334155; }
 .badge-bad { background: rgba(248,113,113,.15); color: var(--danger); border: 1px solid rgba(248,113,113,.3); }
 .badge-wait { background: rgba(251,191,36,.15); color: var(--warning); border: 1px solid rgba(251,191,36,.3); }
 
+.chip { display: inline-block; padding: 4px 10px; margin: 3px; border-radius: 999px; font-size: .75rem; background: rgba(56,189,248,.12); border: 1px solid rgba(56,189,248,.3); color: var(--accent); font-family: 'JetBrains Mono', monospace; }
+.result-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.result-text { font-family: 'JetBrains Mono', monospace; font-size: 1.6rem; font-weight: 700; color: var(--accent); letter-spacing: 2px; word-break: break-all; }
+.result-meta { display: flex; flex-wrap: wrap; gap: 14px; font-size: .82rem; color: var(--muted); margin-top: 8px; }
+.result-alerts { margin-top: 10px; padding: 8px 10px; border-radius: 8px; background: rgba(251,191,36,.1); border: 1px solid rgba(251,191,36,.3); color: var(--warning); font-size: .82rem; }
+.spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--muted); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; vertical-align: middle; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
 /* Logs */
 .logs { height: 260px; overflow-y: auto; background: #020617; border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: #94a3b8; }
 .log-line { margin-bottom: 8px; border-left: 3px solid var(--border); padding-right: 8px; }
@@ -110,7 +117,7 @@ input:checked + .slider:before { transform: translateX(20px); }
 <body>
 <header>
   <div class="header-inner">
-    <div class="logo"><div class="logo-dot"></div><span>Nonzra</span> <span style="color:var(--muted);font-weight:400;font-size:0.85rem">解 الكبتشا التلقائي</span></div>
+    <div class="logo"><div class="logo-dot"></div><span>Nonzra</span> <span style="color:var(--muted);font-weight:400;font-size:0.85rem">حل الكبتشا التلقائي</span></div>
     <div class="status-indicator" id="serverStatus"><div class="dot" id="statusDot"></div><span id="statusText">جاري التحقق...</span></div>
   </div>
 </header>
@@ -138,7 +145,18 @@ input:checked + .slider:before { transform: translateX(20px); }
       <div class="stat-value" id="statWorker">متوقف</div>
       <div class="stat-sub">Auto Worker</div>
     </div>
+    <div class="card">
+      <h3>أنواع مدعومة</h3>
+      <div class="stat-value" id="capTypes">—</div>
+      <div class="stat-sub">محرّكات مسجّلة</div>
+    </div>
   </div>
+
+  <!-- القدرات المدعومة -->
+  <section class="section">
+    <div class="section-header"><h2 class="section-title">أنواع الكبتشا المدعومة</h2><a class="btn btn-outline btn-sm" href="/docs" target="_blank" rel="noopener">توثيق API</a></div>
+    <div id="capList" style="line-height:1.9"><span class="stat-sub">جاري التحميل...</span></div>
+  </section>
 
   <!-- حل سريع -->
   <section class="section">
@@ -149,8 +167,11 @@ input:checked + .slider:before { transform: translateX(20px); }
         <input type="file" id="captchaFile" accept="image/*">
       </div>
       <div class="form-group">
-        <label>نوع الكبتشا (اترك فارغًا للكشف التلقائي)</label>
-        <input type="text" id="captchaType" placeholder="image, hcaptcha, turnstile...">
+        <label>نوع الكبتشا</label>
+        <select id="captchaTypeSelect" onchange="document.getElementById('captchaType').value = this.value">
+          <option value="">كشف تلقائي</option>
+        </select>
+        <input type="hidden" id="captchaType" value="">
       </div>
       <div class="form-group">
         <label>رابط موقع (لـ hCaptcha / Turnstile)</label>
@@ -165,7 +186,7 @@ input:checked + .slider:before { transform: translateX(20px); }
         <label style="margin:0;display:flex;align-items:center;gap:6px"><input type="checkbox" id="autoMode" checked> وضع تلقائي كامل</label>
       </div>
       <div style="margin-top:8px">
-        <label>Number of escalations</label>
+        <label>عدد التصعيدات (escalations)</label>
         <input type="number" id="maxEscalations" value="2" min="1" max="10" style="width: 50px;">
       </div>
       <button class="btn btn-success btn-primary" onclick="solveAuto()">بدء الحل التلقائي</button>

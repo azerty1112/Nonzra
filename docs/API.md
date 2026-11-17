@@ -162,3 +162,63 @@ console.log(result.text);
 ## الترخيص
 
 MIT - للاستخدام المصرح به في الاختبار والمراقبة والأتمتة فقط.
+
+## `GET /capabilities`
+قائمة أنواع الكبتشا المدعومة فعليًا مع المحرّكات المسجّلة لكل نوع.
+
+```json
+{
+  "supported_types": ["drag", "hcaptcha", "image", "math", "point", "recaptcha_v2", "rotate", "slider", "text", "turnstile"],
+  "types": { "math": { "solvers": ["MathSolver"], "count": 1 } },
+  "unsupported_types": ["funcaptcha", "geetest", "hcaptcha_enterprise", "recaptcha_v2_invisible", "recaptcha_v3"],
+  "total_solvers": 10,
+  "version": "0.6.0"
+}
+```
+
+## `POST /math/evaluate`
+حساب تعبير رياضي بأمان، أو حلّ صورة كبتشا حسابية عبر `image_b64`.
+
+```json
+{ "expression": "12 × 4" }
+→ { "success": true, "expression": "12 * 4", "answer": "48", "error": null }
+```
+
+## `POST /batch/solve`
+حل حتى 50 صورة مرمّزة بـ base64 في طلب واحد.
+
+```json
+{
+  "captcha_type": "image",
+  "items": [
+    { "image_b64": "iVBORw0...", "captcha_type": "image" },
+    { "image_b64": "iVBORw0...", "template_b64": "iVBORw0...", "captcha_type": "drag" }
+  ]
+}
+```
+
+الاستجابة تحتوي `count`, `succeeded`, `failed`, `success_rate`, و`results` (لكل عنصر `index`, `success`, `text`, `confidence`, `error`).
+
+## `POST /synthetic/batch`
+توليد صور كبتشا صناعية مع تسمياتها لتدريب CNN أو الاختبار.
+
+```json
+{ "count": 10, "length": 4, "seed": 7, "with_png": true }
+→ { "count": 10, "charset": "ABCDEFGHJKLMNPQRSTUVWXYZ23456789", "items": [{ "text": "WK3D", "png_base64": "..." }] }
+```
+
+## `GET /synthetic/sample?length=4&seed=1`
+يُرجع صورة PNG مباشرة، والنص الصحيح في الترويسة `X-Captcha-Text`.
+
+## `GET /metrics`
+صيغة Prometheus النصية القياسية (`text/plain; version=0.0.4`) — صالحة للسكراب مباشرة. تعيد `503` إذا لم تكن `prometheus-client` مثبتة.
+
+## متغيرات البيئة
+
+| المتغير | الوصف |
+|---------|-------|
+| `DATABASE_URL` | رابط قاعدة البيانات (افتراضيًا `sqlite:///nonecap_clone.db`) |
+| `NONECAP_ENCRYPTION_KEY` | مفتاح تشفير ثابت لمفاتيح API (إن لم يُحدَّد يُحفظ في `data/.encryption_key`) |
+| `NONECAP_KEY_FILE` | مسار ملف مفتاح التشفير |
+| `NONECAP_CORS_ORIGINS` | أصول CORS مسموحة (`*` أو قائمة مفصولة بفواصل) |
+| `NVIDIA_API_KEY` / `NVIDIA_API_ENDPOINT` | خدمة حل خارجية اختيارية |

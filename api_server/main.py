@@ -2,10 +2,12 @@
 
 import base64
 import json
+import os
 import uuid
 import time
 import re
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timezone
 
@@ -65,7 +67,11 @@ from solver_engine import (
     Database,
     configure_hcaptcha_external,
     get_hcaptcha_service_stats,
+    get_capabilities,
+    evaluate_expression,
+    normalize_expression,
 )
+from solver_engine.synthetic import generate_batch as generate_synthetic_batch
 from solver_engine.db import encrypt_value, decrypt_value
 
 from intelligence.training import CaptchaDataset
@@ -136,6 +142,12 @@ from solver_engine import (
     configure_hcaptcha_external,
 )
 
+API_VERSION = "0.6.0"
+
+# المسار الجذري للمشروع (حتى تعمل لوحة التحكم من أي دليل تشغيل)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+WEB_DIR = PROJECT_ROOT / "web"
+
 limiter = Limiter(key_func=get_remote_address)
 
 security = HTTPBearer(auto_error=False)
@@ -185,7 +197,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="NoneCap Clone API",
-    version="0.5.0",
+    version=API_VERSION,
     lifespan=lifespan,
     description="""
     # NoneCap Clone API
@@ -230,11 +242,34 @@ app = FastAPI(
 )
 app.state.limiter = limiter
 
+# --------- CORS: يسمح للوحات والإضافات بالاتصال بالسيرفر ----------
+_CORS_ORIGINS_ENV = os.environ.get("NONECAP_CORS_ORIGINS", "")
+if _CORS_ORIGINS_ENV.strip() in ("*", "all"):
+    _CORS_ORIGINS: List[str] = ["*"]
+elif _CORS_ORIGINS_ENV.strip():
+    _CORS_ORIGINS = [o.strip() for o in _CORS_ORIGINS_ENV.split(",") if o.strip()]
+else:
+    _CORS_ORIGINS = []
+
+if _CORS_ORIGINS:
+    from fastapi.middleware.cors import CORSMiddleware
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_CORS_ORIGINS,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["*"],
+        expose_headers=["X-Captcha-Text"],
+    )
+
 # قاعدة بيانات آمنة مع تشفير مفاتيح API
 secure_db = Database()
 
-# خدمة الملفات الثابتة للوحة الويب
-app.mount("/static", StaticFiles(directory="web/static"), name="static")
+# خدمة الملفات الثابتة للوحة الويب (مسار مطلق يعمل من أي دليل)
+_STATIC_DIR = WEB_DIR / "static"
+if _STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 
 # --------- نظام أمان IP ومعدل طلب متحرك ----------
@@ -296,7 +331,18 @@ async def security_middleware(request: Request, call_next: Any) -> Any:
 
 @app.get("/web", response_class=HTMLResponse)
 async def web_dashboard() -> Any:
-    return FileResponse("web/templates/dashboard.html")
+    dashboard_path = WEB_DIR / "templates" / "dashboard.html"
+    if not dashboard_path.is_file():
+        raise HTTPException(status_code=404, detail="ملف لوحة التحكم غير موجود")
+    return FileResponse(str(dashboard_path))
+
+
+@app.get("/", include_in_schema=False)
+async def root_redirect() -> Any:
+    """تحويل الجذر إلى لوحة التحكم مباشرة."""
+    from fastapi.responses import RedirectResponse
+
+    return RedirectResponse(url="/dashboard")
 
 # --------- نظام التقدم الفوري ----------
 JOB_PROGRESS: Dict[str, "JobProgress"] = {}
@@ -713,7 +759,7 @@ def _build_kwargs(req: BaseSolveRequest, file_bytes: Optional[bytes] = None, tem
 @app.post("/solve/{captcha_type}", response_model=SolveResponse)
 @limiter.limit("30/minute")
 async def solve_sync(
-    captcha_type: str,
+    request: Request, captcha_type: str,
     req: BaseSolveRequest,
     file: Optional[UploadFile] = File(None),
     template: Optional[UploadFile] = File(None),
@@ -820,7 +866,7 @@ async def solve_sync(
 @app.post("/solve/async/{captcha_type}", response_model=SolveResponse)
 @limiter.limit("60/minute")
 async def solve_async(
-    captcha_type: str,
+    request: Request, captcha_type: str,
     req: BaseSolveRequest,
     file: Optional[UploadFile] = File(None),
     template: Optional[UploadFile] = File(None),
@@ -899,7 +945,8 @@ async def solve_async(
 
 @app.get("/job/{job_id}", response_model=SolveResponse)
 @limiter.limit("120/minute")
-async def job_status(job_id: str, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> SolveResponse:
+async def job_status(request: Request,
+                     job_id: str, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> SolveResponse:
     _auth(credentials)
     job = JOBS.get(job_id)
     if not job:
@@ -918,7 +965,7 @@ async def job_status(job_id: str, credentials: Optional[HTTPAuthorizationCredent
 @app.get("/job/{job_id}/progress")
 @limiter.limit("120/minute")
 async def job_progress(
-    job_id: str,
+    request: Request, job_id: str,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Dict[str, Any]:
     """الحصول على تقدم المهمة مع تفاصيل الخطوات."""
@@ -951,14 +998,16 @@ async def ws_job(websocket: WebSocket, job_id: str) -> None:
 
 @app.get("/stats")
 @limiter.limit("60/minute")
-async def stats(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Dict[str, Any]:
+async def stats(request: Request,
+                credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Dict[str, Any]:
     _auth(credentials)
     return db.stats()
 
 
 @app.get("/monitor")
 @limiter.limit("60/minute")
-async def monitor_report(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Dict[str, Any]:
+async def monitor_report(request: Request,
+                         credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Dict[str, Any]:
     _auth(credentials)
     return monitor.report()
 
@@ -968,7 +1017,7 @@ async def monitor_report(credentials: Optional[HTTPAuthorizationCredentials] = D
 @app.get("/analytics/summary")
 @limiter.limit("60/minute")
 async def analytics_summary(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Dict[str, Any]:
     """ملخص التحليلات الشاملة."""
     _auth(credentials)
@@ -996,7 +1045,7 @@ async def analytics_summary(
 @app.get("/analytics/captcha-types")
 @limiter.limit("60/minute")
 async def analytics_captcha_types(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Dict[str, Any]:
     """إحصائيات حسب نوع الكبتشا."""
     _auth(credentials)
@@ -1024,7 +1073,7 @@ async def analytics_captcha_types(
 @app.get("/analytics/audit")
 @limiter.limit("60/minute")
 async def analytics_audit(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Dict[str, Any]:
     """إحصائيات التدقيق."""
     _auth(credentials)
@@ -1037,7 +1086,7 @@ async def analytics_audit(
 @app.get("/analytics/recent-activity")
 @limiter.limit("60/minute")
 async def analytics_recent_activity(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     limit: int = 50,
 ) -> Dict[str, Any]:
     """النشاط الأخير."""
@@ -1055,7 +1104,7 @@ async def analytics_recent_activity(
 @app.post("/analysis/image")
 @limiter.limit("60/minute")
 async def analyze_image(
-    file: UploadFile = File(...),
+    request: Request, file: UploadFile = File(...),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Dict[str, Any]:
     _auth(credentials)
@@ -1089,7 +1138,7 @@ class FeedbackRequest(BaseModel):
 @app.post("/auto")
 @limiter.limit("30/minute")
 async def auto_solve(
-    file: Optional[UploadFile] = File(None),
+    request: Request, file: Optional[UploadFile] = File(None),
     captcha_type: Optional[str] = Form(None),
     sitekey: Optional[str] = Form(None),
     url: Optional[str] = Form(None),
@@ -1210,7 +1259,7 @@ async def solve_url(
 @app.post("/auto/async")
 @limiter.limit("60/minute")
 async def auto_submit(
-    file: Optional[UploadFile] = File(None),
+    request: Request, file: Optional[UploadFile] = File(None),
     captcha_type: Optional[str] = Form(None),
     sitekey: Optional[str] = Form(None),
     url: Optional[str] = Form(None),
@@ -1243,7 +1292,7 @@ async def auto_submit(
 @app.get("/auto/job/{job_id}")
 @limiter.limit("120/minute")
 async def auto_job_status(
-    job_id: str,
+    request: Request, job_id: str,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Dict[str, Any]:
     _auth(credentials)
@@ -1256,7 +1305,7 @@ async def auto_job_status(
 @app.get("/auto/status")
 @limiter.limit("60/minute")
 async def auto_status(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Dict[str, Any]:
     _auth(credentials)
     return {
@@ -1270,7 +1319,7 @@ async def auto_status(
 @app.post("/feedback")
 @limiter.limit("120/minute")
 async def feedback(
-    req: FeedbackRequest,
+    request: Request, req: FeedbackRequest,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Dict[str, Any]:
     _auth(credentials)
@@ -1318,13 +1367,18 @@ class KeyInfo(BaseModel):
 @app.post("/api/keys", response_model=CreateKeyResponse)
 @limiter.limit("20/minute")
 async def create_api_key(
-    req: CreateKeyRequest,
+    request: Request, req: CreateKeyRequest,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> CreateKeyResponse:
     _auth(credentials)
     key_id = str(uuid.uuid4())
     raw_key = generate_api_key()
     api_key_store.add(key_id, hash_api_key(raw_key), req.name)
+    # حفظ المفتاح في قاعدة البيانات المشفّرة أيضًا (يبقى صالحًا بعد إعادة التشغيل)
+    try:
+        secure_db.add_api_key(key_id, raw_key, req.name)
+    except Exception:  # noqa: BLE001
+        pass
     return CreateKeyResponse(
         key_id=key_id,
         api_key=raw_key,
@@ -1336,7 +1390,7 @@ async def create_api_key(
 @app.get("/api/keys", response_model=list)
 @limiter.limit("60/minute")
 async def list_api_keys(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> list:
     _auth(credentials)
     return api_key_store.list_keys()
@@ -1345,11 +1399,16 @@ async def list_api_keys(
 @app.delete("/api/keys/{key_id}")
 @limiter.limit("30/minute")
 async def delete_api_key(
-    key_id: str,
+    request: Request, key_id: str,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Dict[str, Any]:
     _auth(credentials)
     ok = api_key_store.deactivate(key_id)
+    # إلغاء التفعيل في قاعدة البيانات المشفّرة أيضًا
+    try:
+        ok = secure_db.deactivate_api_key(key_id) or ok
+    except Exception:  # noqa: BLE001
+        pass
     if not ok:
         raise HTTPException(status_code=404, detail="المفتاح غير موجود")
     return {"ok": True}
@@ -1382,7 +1441,7 @@ class UpdateUserRequest(BaseModel):
 @app.get("/users", response_model=list)
 @limiter.limit("60/minute")
 async def list_users(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> list:
     """قائمة جميع المستخدمين (مخصص للمشرفين فقط)."""
     _auth(credentials)
@@ -1402,7 +1461,7 @@ async def list_users(
 @app.post("/users", response_model=UserResponse)
 @limiter.limit("30/minute")
 async def create_user(
-    req: CreateUserRequest,
+    request: Request, req: CreateUserRequest,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> UserResponse:
     """إنشاء مستخدم جديد (مخصص للمشرفين فقط)."""
@@ -1446,7 +1505,7 @@ async def create_user(
 @app.get("/users/{user_id}", response_model=UserResponse)
 @limiter.limit("60/minute")
 async def get_user(
-    user_id: str,
+    request: Request, user_id: str,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> UserResponse:
     """الحصول على تفاصيل مستخدم."""
@@ -1480,7 +1539,7 @@ async def get_user(
 @app.put("/users/{user_id}", response_model=UserResponse)
 @limiter.limit("30/minute")
 async def update_user(
-    user_id: str,
+    request: Request, user_id: str,
     req: UpdateUserRequest,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> UserResponse:
@@ -1529,7 +1588,7 @@ async def update_user(
 @app.delete("/users/{user_id}")
 @limiter.limit("30/minute")
 async def delete_user(
-    user_id: str,
+    request: Request, user_id: str,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Dict[str, Any]:
     """حذف مستخدم (مخصص للمشرفين فقط)."""
@@ -1557,7 +1616,7 @@ async def delete_user(
 @app.get("/users/me", response_model=UserResponse)
 @limiter.limit("60/minute")
 async def get_current_user(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> UserResponse:
     """الحصول على بيانات المستخدم الحالي."""
     _auth(credentials)
@@ -1605,7 +1664,7 @@ class ScheduleJobResponse(BaseModel):
 @app.post("/schedule/jobs", response_model=ScheduleJobResponse)
 @limiter.limit("30/minute")
 async def create_scheduled_job(
-    req: ScheduleJobRequest,
+    request: Request, req: ScheduleJobRequest,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> ScheduleJobResponse:
     """إنشاء مهمة مجدولة جديدة للتحل التلقائي."""
@@ -1641,7 +1700,7 @@ async def create_scheduled_job(
 @app.get("/schedule/jobs", response_model=list)
 @limiter.limit("60/minute")
 async def list_scheduled_jobs(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> list:
     """قائمة جميع المهام المجدولة."""
     _auth(credentials)
@@ -1656,7 +1715,7 @@ async def list_scheduled_jobs(
 @app.get("/schedule/jobs/{job_id}", response_model=ScheduleJobResponse)
 @limiter.limit("60/minute")
 async def get_scheduled_job(
-    job_id: str,
+    request: Request, job_id: str,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> ScheduleJobResponse:
     """الحصول على تفاصيل مهمة مجدولة."""
@@ -1683,7 +1742,7 @@ async def get_scheduled_job(
 @app.put("/schedule/jobs/{job_id}", response_model=ScheduleJobResponse)
 @limiter.limit("30/minute")
 async def update_scheduled_job(
-    job_id: str,
+    request: Request, job_id: str,
     req: ScheduleJobRequest,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> ScheduleJobResponse:
@@ -1716,7 +1775,7 @@ async def update_scheduled_job(
 @app.delete("/schedule/jobs/{job_id}")
 @limiter.limit("30/minute")
 async def delete_scheduled_job(
-    job_id: str,
+    request: Request, job_id: str,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Dict[str, Any]:
     """حذف مهمة مجدولة."""
@@ -1758,7 +1817,7 @@ class BackupResponse(BaseModel):
 @app.post("/backup/create", response_model=BackupResponse)
 @limiter.limit("10/minute")
 async def create_backup(
-    req: BackupRequest,
+    request: Request, req: BackupRequest,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> BackupResponse:
     """إنشاء نسخة احتياطية من النظام."""
@@ -1792,7 +1851,7 @@ async def create_backup(
 @app.get("/backup/list", response_model=list)
 @limiter.limit("60/minute")
 async def list_backups(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> list:
     """قائمة جميع النسخ الاحتياطية."""
     _auth(credentials)
@@ -1808,7 +1867,7 @@ async def list_backups(
 @app.post("/backup/restore/{backup_id}")
 @limiter.limit("10/minute")
 async def restore_backup(
-    backup_id: str,
+    request: Request, backup_id: str,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Dict[str, Any]:
     """استعادة نسخة احتياطية."""
@@ -1859,7 +1918,7 @@ BULK_JOBS: Dict[str, Dict[str, Any]] = {}
 @app.post("/bulk/auto", response_model=BulkSubmitResponse)
 @limiter.limit("10/minute")
 async def bulk_auto(
-    req: BulkSubmitRequest,
+    request: Request, req: BulkSubmitRequest,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> BulkSubmitResponse:
     _auth(credentials)
@@ -1893,7 +1952,7 @@ async def bulk_auto(
 @app.get("/bulk/{bulk_id}")
 @limiter.limit("60/minute")
 async def bulk_status(
-    bulk_id: str,
+    request: Request, bulk_id: str,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Dict[str, Any]:
     _auth(credentials)
@@ -1912,12 +1971,192 @@ async def bulk_status(
     return bulk
 
 
+# --------- أدوات مساعدة: العمليات الحسابية والبيانات الصناعية ----------
+
+class MathRequest(BaseModel):
+    expression: str = Field(..., description="تعبير حسابي مثل 5+3 أو 12 × 4")
+    image_b64: Optional[str] = Field(None, description="بدلًا من التعبير: صورة كبتشا حسابية")
+
+
+class MathResponse(BaseModel):
+    success: bool
+    expression: Optional[str] = None
+    answer: Optional[str] = None
+    error: Optional[str] = None
+
+
+@app.post("/math/evaluate", response_model=MathResponse, tags=["solving"])
+@limiter.limit("120/minute")
+async def math_evaluate(
+    request: Request, req: MathRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> MathResponse:
+    """يحسب تعبيرًا حسابيًا بأمان، أو يقرأ صورة كبتشا حسابية ويحلّها."""
+    _auth(credentials)
+
+    if req.image_b64:
+        image_bytes = _decode_b64(req.image_b64)
+        if not image_bytes:
+            raise HTTPException(status_code=400, detail="image_b64 غير صالح")
+        result = await registry.solve_async(CaptchaType.MATH, image_bytes=image_bytes)
+        return MathResponse(
+            success=result.success,
+            expression=(result.metadata or {}).get("expression"),
+            answer=result.text,
+            error=result.error,
+        )
+
+    expression = normalize_expression(req.expression)
+    ok, value, error = evaluate_expression(expression)
+    if not ok or value is None:
+        return MathResponse(success=False, expression=expression, error=error)
+    from solver_engine.math import format_number
+
+    return MathResponse(success=True, expression=expression, answer=format_number(value))
+
+
+class SyntheticRequest(BaseModel):
+    count: int = Field(5, ge=1, le=200, description="عدد العينات")
+    length: int = Field(4, ge=1, le=12, description="عدد أحرف كل كبتشا")
+    charset: Optional[str] = Field(None, description="مجموعة الأحرف المسموحة")
+    width: int = Field(160, ge=60, le=600)
+    height: int = Field(60, ge=24, le=300)
+    seed: Optional[int] = Field(None, description="بذرة عشوائية للتكرار")
+    with_png: bool = Field(True, description="إرجاع الصور PNG بترميز base64")
+
+
+@app.post("/synthetic/batch", tags=["training"])
+@limiter.limit("20/minute")
+async def synthetic_batch(
+    request: Request, req: SyntheticRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    """يُولّد دفعة صور كبتشا صناعية مع تسمياتها (لتدريب CNN أو الاختبار)."""
+    _auth(credentials)
+    from solver_engine.synthetic import DEFAULT_CHARSET
+
+    items = generate_synthetic_batch(
+        count=req.count,
+        length=req.length,
+        charset=req.charset or DEFAULT_CHARSET,
+        width=req.width,
+        height=req.height,
+        seed=req.seed,
+    )
+    if not req.with_png:
+        for item in items:
+            item.pop("png_base64", None)
+    return {
+        "count": len(items),
+        "charset": req.charset or DEFAULT_CHARSET,
+        "items": items,
+    }
+
+
+@app.get("/synthetic/sample", tags=["training"])
+@limiter.limit("60/minute")
+async def synthetic_sample(
+    request: Request,
+    length: int = Query(4, ge=1, le=12),
+    seed: Optional[int] = Query(None),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Any:
+    """يُرجع صورة كبتشا صناعية واحدة كملف PNG مباشرة (مفيد للاختبار السريع)."""
+    _auth(credentials)
+    from fastapi.responses import Response as FastAPIResponse
+    from solver_engine.synthetic import encode_png, generate_sample
+
+    image, text = generate_sample(length=length, seed=seed)
+    return FastAPIResponse(
+        content=encode_png(image),
+        media_type="image/png",
+        headers={"X-Captcha-Text": text},
+    )
+
+
+class BatchSolveItem(BaseModel):
+    image_b64: str
+    captcha_type: Optional[str] = None
+    template_b64: Optional[str] = None
+
+
+class BatchSolveRequest(BaseModel):
+    items: List[BatchSolveItem] = Field(..., min_length=1, max_length=50)
+    captcha_type: Optional[str] = Field(None, description="نوع افتراضي لكل العناصر")
+    preprocess: bool = True
+
+
+@app.post("/batch/solve", tags=["solving"])
+@limiter.limit("20/minute")
+async def batch_solve(
+    request: Request, req: BatchSolveRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    """يحل حتى 50 كبتشا في طلب واحد (متزامن، مناسب للصور الصغيرة)."""
+    _auth(credentials)
+    import asyncio
+
+    async def _one(index: int, item: BatchSolveItem) -> Dict[str, Any]:
+        image_bytes = _decode_b64(item.image_b64)
+        if not image_bytes:
+            return {
+                "index": index,
+                "success": False,
+                "error": "image_b64 غير صالح",
+            }
+        type_name = item.captcha_type or req.captcha_type or "image"
+        try:
+            ctype = CaptchaType(type_name)
+        except ValueError:
+            return {
+                "index": index,
+                "success": False,
+                "error": f"نوع كبتشا غير مدعوم: {type_name}",
+            }
+        kwargs: Dict[str, Any] = {"image_bytes": image_bytes}
+        template_bytes = _decode_b64(item.template_b64)
+        if template_bytes:
+            kwargs["template_bytes"] = template_bytes
+        started = time.time()
+        result = await registry.solve_async(ctype, **kwargs)
+        db.record_attempt(
+            captcha_type=ctype.value,
+            success=result.success,
+            confidence=result.confidence,
+            response_time_ms=result.response_time_ms,
+            error=result.error,
+        )
+        return {
+            "index": index,
+            "captcha_type": ctype.value,
+            "success": result.success,
+            "text": result.text,
+            "token": result.token,
+            "confidence": result.confidence,
+            "response_time_ms": result.response_time_ms,
+            "error": result.error,
+            "total_ms": int((time.time() - started) * 1000),
+        }
+
+    results = await asyncio.gather(
+        *[_one(i, item) for i, item in enumerate(req.items)]
+    )
+    succeeded = sum(1 for r in results if r.get("success"))
+    return {
+        "count": len(results),
+        "succeeded": succeeded,
+        "failed": len(results) - succeeded,
+        "success_rate": round(succeeded / len(results) * 100, 2) if results else 0.0,
+        "results": results,
+    }
+
+
 # --------- التحسين الذاتي ----------
 
 @app.get("/self-improve/stats")
 @limiter.limit("60/minute")
 async def self_improve_stats(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Dict[str, Any]:
     _auth(credentials)
     return self_improver.stats()
@@ -1926,7 +2165,7 @@ async def self_improve_stats(
 @app.post("/self-improve/confirm/{sample_id}")
 @limiter.limit("60/minute")
 async def self_improve_confirm(
-    sample_id: str,
+    request: Request, sample_id: str,
     text: Optional[str] = None,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Dict[str, Any]:
@@ -1940,7 +2179,7 @@ async def self_improve_confirm(
 @app.post("/self-improve/retrain")
 @limiter.limit("10/minute")
 async def self_improve_retrain(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Dict[str, Any]:
     _auth(credentials)
     return self_improver.maybe_retrain()
@@ -1951,7 +2190,7 @@ async def self_improve_retrain(
 @app.get("/experience/stats")
 @limiter.limit("60/minute")
 async def experience_stats(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Dict[str, Any]:
     _auth(credentials)
     return experience_engine.status()
@@ -1960,7 +2199,7 @@ async def experience_stats(
 @app.get("/experience/knowledge")
 @limiter.limit("60/minute")
 async def experience_knowledge(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Dict[str, Any]:
     _auth(credentials)
     return knowledge_base.stats()
@@ -1969,7 +2208,7 @@ async def experience_knowledge(
 @app.post("/experience/find")
 @limiter.limit("60/minute")
 async def experience_find(
-    req: ExperienceFindRequest,
+    request: Request, req: ExperienceFindRequest,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Dict[str, Any]:
     _auth(credentials)
@@ -1999,7 +2238,7 @@ class ConfigureHCaptchaExternalResponse(BaseModel):
 @app.post("/api/hcaptcha/external", response_model=ConfigureHCaptchaExternalResponse)
 @limiter.limit("10/minute")
 async def configure_hcaptcha_external_endpoint(
-    req: ConfigureHCaptchaExternalRequest,
+    request: Request, req: ConfigureHCaptchaExternalRequest,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> ConfigureHCaptchaExternalResponse:
     _auth(credentials)
@@ -2108,18 +2347,52 @@ async def dashboard() -> HTMLResponse:
     return HTMLResponse(content=DASHBOARD_HTML)
 
 
-@app.get("/health")
-async def health() -> Dict[str, str]:
-    return {"status": "ok", "service": "nonecap-clone", "version": "0.4.0"}
+@app.get("/health", tags=["system"])
+async def health() -> Dict[str, Any]:
+    """فحص صحة شامل: حالة السيرفر، قاعدة البيانات، والعامل الخلفي."""
+    worker_snapshot = worker.snapshot()
+    return {
+        "status": "ok",
+        "service": "nonecap-clone",
+        "version": API_VERSION,
+        "database": "sqlite/postgres" if getattr(db, "_available", False) else "memory",
+        "worker": {
+            "running": bool(worker_snapshot.get("running")),
+            "processed": worker_snapshot.get("processed", 0),
+            "queued": worker_snapshot.get("queue_size", 0),
+        },
+    }
 
 
 @app.get("/metrics", include_in_schema=False)
-async def metrics() -> dict:
+async def metrics() -> Any:
+    """مقاييس Prometheus بصيغة النص القياسية (صالحة للسكراب مباشرة)."""
     if not _PROM_AVAILABLE:
-        return {"error": "prometheus_client غير مثبت"}
-    from fastapi.responses import Response
+        return JSONResponse(
+            status_code=503,
+            content={"error": "prometheus_client غير مثبت"},
+        )
+    from fastapi.responses import Response as FastAPIResponse
     from prometheus_client import generate_latest
-    return {"metrics": generate_latest().decode("utf-8")}
+
+    return FastAPIResponse(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+@app.get("/capabilities", tags=["system"])
+async def capabilities() -> Dict[str, Any]:
+    """أنواع الكبتشا المدعومة فعليًا مع المحرّكات المسجّلة لكل نوع."""
+    data = get_capabilities()
+    data["version"] = API_VERSION
+    data["external_services"] = {
+        "hcaptcha": len(get_hcaptcha_service_stats()),
+    }
+    return data
+
+
+@app.get("/types", tags=["system"], include_in_schema=False)
+async def list_types() -> Dict[str, Any]:
+    """اختصار: قائمة أنواع الكبتشا المدعومة فقط."""
+    return {"types": get_capabilities()["supported_types"]}
 
 
 def _auth(
@@ -2142,16 +2415,3 @@ def _auth(
         raise HTTPException(status_code=429, detail="تم تجاوز الحد المسموح للمفتاح")
     api_key_store.record_usage(info["key_id"])
     return info
-
-@app.post("/test-simple-request")
-async def test_simple_request(request: Request):
-    body = await request.json()
-    return {"received": body, "method": request.method}
-
-@app.post("/test-with-deps")
-async def test_with_deps(
-    request: Request,
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
-):
-    body = await request.json()
-    return {"received": body, "auth": bool(credentials)}

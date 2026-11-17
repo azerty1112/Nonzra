@@ -54,12 +54,60 @@ except Exception:  # noqa: BLE001
         pass
 
 
+_KEY_CACHE: Optional[bytes] = None
+
+# مسار ملف المفتاح الدائم (يمكن تغييره عبر NONECAP_KEY_FILE)
+_KEY_FILE = os.environ.get(
+    "NONECAP_KEY_FILE",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", ".encryption_key"),
+)
+
+
+def _normalize_fernet_key(raw: bytes) -> bytes:
+    """يحوّل أي نص إلى مفتاح Fernet صالح (32 بايت بترميز base64-url)."""
+    import hashlib
+
+    digest = hashlib.sha256(raw).digest()
+    return base64.urlsafe_b64encode(digest)
+
+
 def _get_encryption_key() -> bytes:
-    """يُعيد مفتاح تشفير من متغير البيئة أو يُنشئ مفتاحاً مؤقتاً."""
+    """يُعيد مفتاح تشفير ثابتًا (من البيئة أو من ملف مفتاح دائم).
+
+    الثبات ضروري: تغيير المفتاح بين التشغيلات يجعل القيم المشفّرة
+    (مثل مفاتيح API) غير قابلة للفك بعد إعادة تشغيل السيرفر.
+    """
+    global _KEY_CACHE
+    if _KEY_CACHE is not None:
+        return _KEY_CACHE
+
     env_key = os.environ.get("NONECAP_ENCRYPTION_KEY")
     if env_key:
-        return env_key.encode("utf-8")
-    return Fernet.generate_key()
+        _KEY_CACHE = _normalize_fernet_key(env_key.encode("utf-8"))
+        return _KEY_CACHE
+
+    try:
+        with open(_KEY_FILE, "rb") as fh:
+            stored = fh.read().strip()
+        if stored:
+            _KEY_CACHE = _normalize_fernet_key(stored)
+            return _KEY_CACHE
+    except OSError:
+        pass
+
+    generated = Fernet.generate_key()
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(_KEY_FILE)), exist_ok=True)
+        with open(_KEY_FILE, "wb") as fh:
+            fh.write(generated)
+        try:
+            os.chmod(_KEY_FILE, 0o600)
+        except OSError:
+            pass
+    except OSError:
+        pass
+    _KEY_CACHE = generated
+    return _KEY_CACHE
 
 
 def encrypt_value(value: str) -> str:
@@ -224,6 +272,21 @@ class Database:
                     )
                 )
             db.commit()
+        finally:
+            db.close()
+
+    def deactivate_api_key(self, key_id: str) -> bool:
+        """يُلغي تفعيل مفتاح API في قاعدة البيانات المشفّرة."""
+        if not self._available:
+            return False
+        db = self.session()
+        try:
+            row = db.query(APIKey).filter(APIKey.key_id == key_id).first()  # type: ignore[attr-defined]
+            if not row:
+                return False
+            row.is_active = False
+            db.commit()
+            return True
         finally:
             db.close()
 

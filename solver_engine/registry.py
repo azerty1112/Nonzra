@@ -11,6 +11,10 @@ from .recaptcha import ReCaptchaSolver
 from .turnstile import TurnstileSolver
 from .drag import DragSolver
 from .point import PointSolver
+from .slider import SliderSolver
+from .rotate import RotateSolver
+from .math import MathSolver
+from .text import TextSolver
 
 
 class SolverRegistry:
@@ -109,6 +113,10 @@ registry.register(ReCaptchaSolver())
 registry.register(TurnstileSolver())
 registry.register(DragSolver())
 registry.register(PointSolver())
+registry.register(SliderSolver())
+registry.register(RotateSolver())
+registry.register(MathSolver())
+registry.register(TextSolver())
 
 
 def configure_hcaptcha_external(
@@ -171,9 +179,29 @@ def get_cnn_stats() -> Dict[str, Any]:
     return {"available": False, "trained": False, "torch_available": _TORCH_AVAILABLE}
 
 
+def get_capabilities() -> Dict[str, Any]:
+    """يُعيد قائمة أنواع الكبتشا المدعومة وعدد المحركات المسجّلة لكل نوع."""
+    types = {}
+    for ctype, solvers in registry._solvers.items():
+        types[ctype.value] = {
+            "solvers": [type(s).__name__ for s in solvers],
+            "count": len(solvers),
+        }
+    missing = sorted(
+        t.value for t in CaptchaType if t.value not in types
+    )
+    return {
+        "supported_types": sorted(types.keys()),
+        "types": types,
+        "unsupported_types": missing,
+        "total_solvers": sum(v["count"] for v in types.values()),
+    }
+
+
 __all__ = [
     "SolverRegistry",
     "registry",
+    "get_capabilities",
     "configure_hcaptcha_external",
     "get_hcaptcha_service_stats",
     "configure_cnn_solver",
