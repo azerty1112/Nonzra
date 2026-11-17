@@ -1969,6 +1969,7 @@ class BackupResponse(BaseModel):
     includes_intelligence: bool
     status: str
     error: Optional[str] = None
+    excluded: list[str] = []  # ملفات حسّاسة استُثنيت (شفافية الخصوصية)
 
 
 @app.post("/backup/create", response_model=BackupResponse)
@@ -2002,6 +2003,7 @@ async def create_backup(
         includes_intelligence=backup.includes_intelligence,
         status=backup.status,
         error=backup.error,
+        excluded=backup.excluded,
     )
 
 

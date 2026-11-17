@@ -105,3 +105,44 @@ def test_retrain_marker_behaviour_is_preserved(dataset):
     dataset.mark_retrained()
     dataset.add("image", text="X", source="retrain_marker", confirmed=True)
     assert dataset.count_by_source("retrain_marker") == 2
+
+
+def test_backup_excludes_user_samples_by_default(tmp_path, monkeypatch):
+    """حق الحذف يُبطل إذا بقيت صورة في نسخة احتياطية — لذلك تُستثنى افتراضيًا."""
+    import tarfile
+
+    from api_server.backup import BackupManager
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "training_data.json").write_text(
+        json.dumps([{"image_b64": "SECRET-USER-IMAGE"}]), encoding="utf-8"
+    )
+    (tmp_path / "knowledge_base.json").write_text('{"k": 1}', encoding="utf-8")
+
+    manager = BackupManager(backup_dir=str(tmp_path / "backups"))
+    created = manager.create_backup()
+    names = tarfile.open(created.file_path).getnames()
+
+    assert not [n for n in names if "training" in n]
+    assert any("training_data.json" in reason for reason in created.excluded)
+    # تحقّق أن السرّ لا يوجد فعليًا داخل الأرشيف
+    with tarfile.open(created.file_path) as archive:
+        for member in archive.getmembers():
+            payload = archive.extractfile(member)
+            if payload:
+                assert b"SECRET-USER-IMAGE" not in payload.read()
+
+
+def test_backup_includes_samples_only_when_explicitly_enabled(tmp_path, monkeypatch):
+    import tarfile
+
+    from api_server.backup import BackupManager
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NONECAP_BACKUP_SAMPLES", "true")
+    (tmp_path / "training_data.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "knowledge_base.json").write_text('{"k": 1}', encoding="utf-8")
+
+    created = BackupManager(backup_dir=str(tmp_path / "backups")).create_backup()
+    assert "training_data.json" in tarfile.open(created.file_path).getnames()
+    assert any("NONECAP_BACKUP_SAMPLES" in reason for reason in created.excluded)
