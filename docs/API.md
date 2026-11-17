@@ -231,6 +231,23 @@ curl -X POST http://localhost:8000/hcaptcha/live \
 `metadata.stage` يبيّن أين توقف المسار (`checksiteconfig`, `getcaptcha`, `parse`, `checkcaptcha`).
 راجع [`HCAPTCHA_FREE.md`](HCAPTCHA_FREE.md) للحدود ولطريقة تمرير وكيل.
 
+## القراءة العميقة والتعلّم
+
+| الطريقة | المسار | الوصف |
+|---------|--------|-------|
+| GET | `/ocr/engines` | المحرّكات المتاحة + التجميع + تحليل الحروف |
+| GET | `/ocr/policy` | ما تعلّمته السياسة: أداء كل طريقة عرض لكل سياق + معايرة الثقة |
+| POST | `/ocr/policy/save` | حفظ التعلّم على القرص الآن |
+| POST | `/ocr/bench` | `{count, level, seed}` → قياس دقة فعلي على مجموعة ثابتة |
+
+```bash
+python -m solver_engine.bench --count 20 --compare
+curl -X POST http://localhost:8000/ocr/bench -H 'content-type: application/json' -d '{"count":12}'
+```
+
+استجابة `read_text`/`/hcaptcha/live` تحتوي الآن: `raw_engine_confidence`,
+`plausibility`, `variants_tried`, `context`, `strategy`, `notes`.
+
 ## متغيرات البيئة
 
 | المتغير | الوصف |
@@ -240,6 +257,7 @@ curl -X POST http://localhost:8000/hcaptcha/live \
 | `NONECAP_TUNNEL_HEADER` | ترويسة تُضاف لطلبات hCaptcha عبر نفقك، مثال `X-Tunnel-Auth: secret` |
 | `NONECAP_HTTP_TIMEOUT` | مهلة الاستدعاءات الخارجية بالثواني (افتراضي 60) |
 | `NONECAP_HCAPTCHA_BASE` | عنوان بديل لخدمة hCaptcha (مرآة/بوابة محلية) |
+| `NONECAP_OCR_POLICY_PATH` | مسار حفظ تعلّم سياسة القراءة (افتراضي `data/ocr_policy.json`) |
 | `DATABASE_URL` | رابط قاعدة البيانات (افتراضيًا `sqlite:///nonecap_clone.db`) |
 | `NONECAP_ENCRYPTION_KEY` | مفتاح تشفير ثابت لمفاتيح API (إن لم يُحدَّد يُحفظ في `data/.encryption_key`) |
 | `NONECAP_KEY_FILE` | مسار ملف مفتاح التشفير |

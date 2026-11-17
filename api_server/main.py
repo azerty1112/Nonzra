@@ -2160,6 +2160,54 @@ async def ocr_engines(
     return engines_status()
 
 
+@app.get("/ocr/policy", tags=["system"])
+@limiter.limit("60/minute")
+async def ocr_policy_snapshot(
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> Dict[str, Any]:
+    """ما تعلّمته سياسة القراءة: أداء كل طريقة عرض لكل نوع صورة + معايرة الثقة."""
+    _auth(credentials)
+    from intelligence.ocr_policy import get_policy
+
+    return get_policy().snapshot()
+
+
+@app.post("/ocr/policy/save", tags=["system"])
+@limiter.limit("30/minute")
+async def ocr_policy_save(
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> Dict[str, Any]:
+    """يحفظ التعلّم على القرص الآن (يُحفظ تلقائيًا عند الإيقاف أيضًا)."""
+    _auth(credentials)
+    from intelligence.ocr_policy import get_policy
+
+    policy = get_policy()
+    saved = policy.save()
+    return {"saved": saved, "path": policy.path}
+
+
+class OcrBenchRequest(BaseModel):
+    count: int = Field(12, ge=4, le=60)
+    level: str = Field("balanced", description="fast | balanced | max")
+    seed: int = 7
+
+
+@app.post("/ocr/bench", tags=["system"])
+@limiter.limit("6/minute")
+async def ocr_bench(
+    request: Request, req: OcrBenchRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    """يقيس دقة القراءة فعليًا على مجموعة اختبار ثابتة (نفس البذرة ⇒ نفس النتيجة)."""
+    _auth(credentials)
+    from solver_engine.bench import run as run_bench
+
+    report = await asyncio.to_thread(
+        run_bench, level=req.level, count=req.count, seed=req.seed, quiet=True
+    )
+    return report.to_dict()
+
+
 @app.post("/hcaptcha/live", tags=["solving"])
 @limiter.limit("30/minute")
 async def hcaptcha_live_solve(

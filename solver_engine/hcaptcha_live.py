@@ -108,15 +108,92 @@ def _download_image(url: str) -> Optional[bytes]:
         return None
 
 
-def _read_text_from(url: str) -> Tuple[Optional[str], float, str]:
-    """يقرأ نص التحدي من صورة عبر المحرّك الموحّد (عصبي ثم Tesseract)."""
+OCR_CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+
+def _read_text_detailed(
+    data: bytes, expected_len: Optional[int] = None, deep: bool = False
+) -> Dict[str, Any]:
+    """قراءة كاملة لصورة تحدي مع كل مؤشرات الثقة (قابلة للتفسير والتشخيص).
+
+    ``deep=True`` يوسّع طرق العرض إلى أقصى مستوى (تصحيح ميل، إزالة خطوط،
+    تباين) — يُستخدم فقط عند الشك، حفاظًا على السرعة.
+    """
+    from .ocr import read_text_bytes
+
+    result = read_text_bytes(
+        data,
+        allowlist=OCR_CHARSET,
+        expected_len=expected_len,
+        ensemble=True,
+        level="max" if deep else "balanced",
+    )
+    payload = result.to_dict()
+    payload["text"] = result.text if result.success else None
+    return payload
+
+
+def _read_text_from(url: str, expected_len: Optional[int] = None) -> Tuple[Optional[str], float, str]:
+    """يقرأ نص التحدي من صورة عبر المحرّك الموحّد (متوافق مع الإصدار السابق)."""
     data = _download_image(url)
     if not data:
         return None, 0.0, "download_failed"
-    from .ocr import read_text_bytes
+    details = _read_text_detailed(data, expected_len=expected_len)
+    return details.get("text"), float(details.get("confidence") or 0.0), str(
+        details.get("engine") or "none"
+    )
 
-    result = read_text_bytes(data, allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
-    return (result.text if result.success else None), result.confidence, result.engine
+
+def _learn(details: Dict[str, Any], accepted: bool, answer: str) -> None:
+    """يغذّي سياسة التعلّم بنتيجة حقيقية من hCaptcha (قبول/رفض).
+
+    هذا هو أهم مصدر تعلّم: حكم الخدمة نفسها على إجابتنا. نستخدمه لمعايرة
+    الثقة (هل 0.9 تعني فعلًا 90%؟) ولبناء سجل نجاح لكل طريقة عرض/سياق.
+    لا يفشل المسار إن تعذّر التعلّم (مثلًا في اختبارات معزولة).
+    """
+    try:
+        from intelligence.ocr_policy import get_policy
+
+        policy = get_policy()
+        confidence = float(details.get("confidence") or 0.0)
+        policy.observe_confidence(confidence, accepted)
+        context = str(details.get("context") or "unknown")
+        engine = str(details.get("engine") or "none")
+        # اسم طريقة العرض الحقيقية إن عُرف، وإلا اسم المحرّك
+        strategy = str(details.get("strategy") or engine).split(":")[-1]
+        policy.record(
+            context,
+            strategy,
+            expected=answer if accepted else None,
+            got=answer,
+            accepted=accepted,
+        )
+    except Exception:  # noqa: BLE001 - التعلّم تحسين لا شرط للعمل
+        pass
+
+
+def _calibrated_probability(details: Dict[str, Any]) -> Optional[float]:
+    """احتمال نجاح الإجابة بحسب التعلّم السابق (None إن لم تتوفر سياسة)."""
+    try:
+        from intelligence.ocr_policy import get_policy
+
+        confidence = float(details.get("confidence") or 0.0)
+        return float(get_policy().calibrated(confidence))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _certainty(details: Dict[str, Any]) -> float:
+    """ثقة مركّبة: الثقة المصحّحة × اتساق الطول × عدد طرق العرض المتوافقة.
+
+    الغرض: التمييز بين «قراءة واثقة حقًا» و«قراءة ناقصة بثقة خام عالية»، لأن
+    الثانية يجب أن تُقابل بمحاولة جديدة بدلًا من إرسال إجابة خاطئة.
+    """
+    confidence = float(details.get("confidence") or 0.0)
+    sanity = float(details.get("plausibility") or 0.0)
+    text = details.get("text") or ""
+    length_factor = 1.0 if len(text) >= 3 else 0.55
+    return confidence * sanity * length_factor
 
 
 class HCaptchaLiveSolver(BaseSolver):
@@ -241,6 +318,12 @@ class HCaptchaLiveSolver(BaseSolver):
         req_config = _dig(config, "c", "req") or _dig(config, "req")
         host_token = str(_dig(config, "c", "hostToken") or _dig(config, "hostToken") or "")
         last_error = ""
+        last_text: Optional[str] = None
+        last_engine = "none"
+        last_certainty = 0.0
+        last_expected_len: Optional[int] = None
+        keep_expected = False
+        attempted: List[Dict[str, Any]] = []
 
         for round_no in range(1, self.max_rounds + 1):
             try:
@@ -288,15 +371,58 @@ class HCaptchaLiveSolver(BaseSolver):
                     metadata={"stage": "parse"},
                 )
 
-            text, confidence, engine = _read_text_from(challenge.image_urls[0])
-            if not text:
+            data = _download_image(challenge.image_urls[0])
+            if not data:
                 return SolverResult(
                     success=False,
                     captcha_type=self.captcha_type,
-                    error="تعذّر قراءة نص التحدي من الصورة",
+                    error="تعذّر تنزيل صورة التحدي (شبكة/وكيل)",
                     response_time_ms=int((time.time() - start) * 1000),
-                    metadata={"stage": "ocr", "prompt": challenge.prompt, "engine": engine},
+                    metadata={"stage": "download", "prompt": challenge.prompt},
                 )
+
+            # تلميح الطول يُستخدم فقط بعد محاولة مرفوضة (لا نخمّن من العدم)
+            details = _read_text_detailed(
+                data, expected_len=last_expected_len if keep_expected else None
+            )
+            text = details.get("text")
+            confidence = float(details.get("confidence") or 0.0)
+            engine = str(details.get("engine") or "none")
+            if not text:
+                last_error = "تعذّر قراءة نص التحدي من الصورة"
+                last_engine = engine
+                continue  # محاولة جديدة: تحدٍّ آخر قد يكون أوضح
+
+            # إشارات الثقة تُخزَّن حتى لو فشلت المحاولة (تشخيص + تعلّم لاحقًا)
+            attempted.append(
+                {
+                    "round": round_no,
+                    "answer": text,
+                    "certainty": round(_certainty(details), 4),
+                    "ocr": details,
+                }
+            )
+            last_text, last_engine, last_certainty = text, engine, _certainty(details)
+
+            # بوّابة الثقة: إن كانت الثقة المُعايَرة منخفضة جدًا، إعادة القراءة
+            # بعمق أكبر أرخص من إحراق جولة على إجابة منخفضة الاحتمال.
+            if round_no < self.max_rounds:
+                probable = _calibrated_probability(details)
+                if probable is not None and probable < 0.35:
+                    deep = _read_text_detailed(data, deep=True, expected_len=None)
+                    if deep.get("text") and deep.get("confidence", 0) > confidence:
+                        details, text = deep, deep["text"]
+                        confidence = float(deep.get("confidence") or 0.0)
+                        engine = str(deep.get("engine") or engine)
+                        attempted.append(
+                            {
+                                "round": round_no,
+                                "answer": text,
+                                "certainty": round(_certainty(details), 4),
+                                "ocr": details,
+                                "escalated": True,
+                            }
+                        )
 
             try:
                 checked = self.checkcaptcha(sitekey, text, challenge.key, host)
@@ -306,6 +432,7 @@ class HCaptchaLiveSolver(BaseSolver):
 
             token = _dig(checked, "generated_pass_UUID", "pass_token") or ""
             if token:
+                _learn(details, accepted=True, answer=text)
                 return SolverResult(
                     success=True,
                     captcha_type=self.captcha_type,
@@ -318,19 +445,38 @@ class HCaptchaLiveSolver(BaseSolver):
                         "rounds": round_no,
                         "prompt": challenge.prompt,
                         "answer": text,
-                        "ocr_confidence": confidence,
+                        "ocr_confidence": round(confidence, 4),
                         "ocr_engine": engine,
+                        "certainty": round(_certainty(details), 4),
+                        "ocr": details,
+                        "attempts": attempted,
                     },
                 )
 
+            _learn(details, accepted=False, answer=text)
             last_error = str(_dig(checked, "error", "message") or "إجابة مرفوضة")
+            # بعد الرفض: نضيّق مساحة الخطأ باستخدام طول النص المرفوض كتلميح
+            # (hCaptcha النصية أطوالها عادة 4–6) — يرفع دقة المحاولة التالية.
+            keep_expected = len(text) >= 3
+            last_expected_len = len(text) if keep_expected else None
 
+        attempts_meta = {
+            "stage": "checkcaptcha",
+            "attempts": attempted,
+            "last_answer": last_text,
+            "last_engine": last_engine,
+            "last_certainty": round(last_certainty, 4),
+            "max_rounds": self.max_rounds,
+        }
+        if attempts_meta["attempts"]:
+            worst = min(attempted, key=lambda item: item.get("certainty", 0.0))
+            attempts_meta["weakest_ocr"] = worst.get("ocr")
         return SolverResult(
             success=False,
             captcha_type=self.captcha_type,
-            error=f"لم يُقبل الحل: {last_error}",
+            error=f"لم يُقبل الحل: {last_error}" if last_error else "لم يُقبل الحل",
             response_time_ms=int((time.time() - start) * 1000),
-            metadata={"stage": "checkcaptcha"},
+            metadata=attempts_meta,
         )
 
     @staticmethod

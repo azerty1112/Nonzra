@@ -274,7 +274,9 @@ nonecap-clone/
 │   ├── image.py                # حلّال صور نصية (Tesseract OCR)
 │   ├── hcaptcha.py             # hCaptcha (محلي + خدمة خارجية)
 │   ├── hcaptcha_live.py        # حلّ hCaptcha مباشرة عبر بروتوكوله العام (بلا خدمة مدفوعة)
-│   ├── ocr.py                  # OCR موحّد: RapidOCR ← Tesseract ← قالب
+│   ├── ocr.py                  # OCR موحّد: RapidOCR ← Tesseract ← قالب + تجميع تكيّفي
+│   ├── ocr_plus.py             # تطبيع بصري، تحليل حروف، وتصويت بين طرق العرض
+│   ├── bench.py                # مقياس دقة قابل للتشغيل (نفس البذرة ⇒ نفس الرقم)
 │   ├── net.py                  # إعدادات الشبكة/الوكيل للاستدعاءات الخارجية
 │   ├── recaptcha.py            # reCAPTCHA v2/v3
 │   ├── turnstile.py            # Cloudflare Turnstile

@@ -29,6 +29,10 @@ class ImageSolveConfig:
     threshold: str = "otsu"
     denoise: bool = True
     segment: bool = False
+    # دقة القراءة العميقة: التجميع التكيّفي بين طرق العرض + مستوى التصعيد
+    ensemble: bool = True
+    ocr_level: str = "balanced"  # fast | balanced | max
+    expected_len: Optional[int] = None  # طول النص إن عُرف (يرفع الدقة)
 
 
 # ---------------------- قوالب الأحرف الاحتياطية (بدون Tesseract) ----------------------
@@ -141,9 +145,14 @@ class ImageCaptchaSolver(BaseSolver):
             text = ""
             method = "neural_ocr"
             confidence = 0.0
+            neural = None
             neural = read_text_neural(
                 np.array(pil_image.convert("L")) if hasattr(pil_image, "convert") else image,
                 allowlist=cfg.whitelist,
+                # التجميع التكيّفي: يبدأ بأرخص طريقة عرض ويتصاعد فقط عند الشك
+                ensemble=cfg.ensemble,
+                level=cfg.ocr_level,
+                expected_len=cfg.expected_len,
             )
             if neural.success:
                 text = neural.text
@@ -176,13 +185,18 @@ class ImageCaptchaSolver(BaseSolver):
                     pass
 
             elapsed = int((time.time() - start) * 1000)
+            metadata: dict = {"chars": len(text), "method": method}
+            # أثر القراءة العميقة: هل الثقة الخام عُدّلت؟ وكم طريقة عرض جُرّبت؟
+            if neural is not None and getattr(neural, "variants_tried", 0):
+                metadata.update(neural.to_dict())
+                metadata["method"] = method
             return SolverResult(
                 success=bool(text),
                 captcha_type=self.captcha_type,
                 text=text or None,
                 confidence=confidence,
                 response_time_ms=elapsed,
-                metadata={"chars": len(text), "method": method},
+                metadata=metadata,
             )
         except Exception as exc:  # noqa: BLE001
             elapsed = int((time.time() - start) * 1000)

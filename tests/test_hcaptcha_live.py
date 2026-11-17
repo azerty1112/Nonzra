@@ -176,13 +176,22 @@ def test_live_solver_solves_text_challenge(fake_hcaptcha, expected):
 def test_live_solver_reports_rejected_answer(fake_hcaptcha, monkeypatch):
     fake_hcaptcha.expected = "ZZZZ"
     monkeypatch.setattr(
-        hcaptcha_live, "_read_text_from", lambda url: ("WRONG9", 0.9, "stub")
+        hcaptcha_live,
+        "_read_text_detailed",
+        lambda data, expected_len=None: {
+            "text": "WRONG9",
+            "confidence": 0.9,
+            "engine": "stub",
+            "plausibility": 1.0,
+        },
     )
     result = hcaptcha_live.HCaptchaLiveSolver().solve(
         sitekey="sk", url="https://example.com"
     )
     assert result.success is False
     assert "invalid answer" in (result.error or "")
+    assert result.metadata["attempts"] and result.metadata["attempts"][0]["answer"] == "WRONG9"
+    assert result.metadata["last_certainty"] > 0
     # المحلّل يعيد المحاولة بعد الرفض (max_rounds الافتراضي = 2)
     assert len(fake_hcaptcha.answers) == 2
     assert len({a["key"] for a in fake_hcaptcha.answers}) == 2
@@ -234,7 +243,8 @@ def test_ocr_reads_synthetic_captcha():
     assert result.success is True
     assert result.text == "AB12"
     assert result.confidence > 0.8
-    assert result.engine in ("rapidocr", "tesseract")
+    assert result.engine  # "padded" أو "ensemble:balanced" حسب صعوبة الصورة
+    assert result.plausibility >= 0.99
 
 
 def test_ocr_engines_status_reports_available_engine():
