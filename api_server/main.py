@@ -144,7 +144,7 @@ from solver_engine import (
     configure_hcaptcha_external,
 )
 
-API_VERSION = "0.6.0"
+API_VERSION = "0.7.0"
 
 # المسار الجذري للمشروع (حتى تعمل لوحة التحكم من أي دليل تشغيل)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
