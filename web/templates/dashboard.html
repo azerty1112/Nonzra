@@ -4,6 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Nonzra - منصة حل الكبتشا الذكية التلقائية</title>
+<link rel="icon" type="image/svg+xml" href="/static/img/favicon.svg">
+<meta name="description" content="Nonzra: عقل ذاتي لحل الكبتشا — معايرة ثقة، كفاءة لكل نوع، ومخطّط قرار بالقيمة المتوقعة.">
+<meta property="og:title" content="Nonzra — عقل ذاتي لحل الكبتشا">
+<meta property="og:description" content="يتعلّم من كل محاولة ويشرح قراره: معايرة ثقة، كفاءة ذاتية لكل نوع، وتأمّل من الأخطاء.">
+<meta property="og:image" content="/static/img/architecture.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
@@ -74,6 +79,28 @@ tr:hover { background: #334155; }
 .badge-bad { background: rgba(248,113,113,.15); color: var(--danger); border: 1px solid rgba(248,113,113,.3); }
 .badge-wait { background: rgba(251,191,36,.15); color: var(--warning); border: 1px solid rgba(251,191,36,.3); }
 
+.logo-img { width: 34px; height: 34px; border-radius: 9px; box-shadow: 0 0 0 1px var(--border); }
+.mind-head { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-bottom: 16px; }
+.mind-rating { font-family: 'JetBrains Mono', monospace; font-size: 2rem; font-weight: 700; color: var(--accent);
+  line-height: 1; }
+.mind-mood { font-size: .9rem; color: var(--text); }
+.mind-sub { font-size: .8rem; color: var(--muted); }
+.meter { height: 8px; border-radius: 6px; background: #1e293b; overflow: hidden; margin-top: 6px; }
+.meter > i { display: block; height: 100%; border-radius: 6px; background: linear-gradient(90deg, var(--accent), var(--success)); }
+.meter.violet > i { background: linear-gradient(90deg, #a78bfa, #818cf8); }
+.meter.amber > i { background: linear-gradient(90deg, var(--warning), #f59e0b); }
+.skill-row { display: grid; grid-template-columns: 120px 1fr 56px; gap: 10px; align-items: center;
+  font-size: .84rem; margin-bottom: 10px; }
+.notes { list-style: none; display: grid; gap: 8px; }
+.notes li { padding: 10px 12px; border-radius: 10px; background: rgba(56,189,248,.07);
+  border: 1px solid rgba(56,189,248,.22); font-size: .85rem; color: #bae6fd; line-height: 1.6; }
+.notes li::before { content: "✦ "; color: var(--accent); }
+.card-mini { background: #0f172a; border: 1px solid var(--border); border-radius: 12px; padding: 14px; }
+.card-mini h4 { font-size: .92rem; margin-bottom: 8px; color: var(--text); }
+.card-mini p { font-size: .82rem; color: var(--muted); line-height: 1.7; }
+.card-mini ul { margin: 8px 0 0 0; padding-inline-start: 18px; font-size: .8rem; color: #cbd5e1;
+  line-height: 1.7; }
+.cards-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
 .chip { display: inline-block; padding: 4px 10px; margin: 3px; border-radius: 999px; font-size: .75rem; background: rgba(56,189,248,.12); border: 1px solid rgba(56,189,248,.3); color: var(--accent); font-family: 'JetBrains Mono', monospace; }
 .result-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .result-text { font-family: 'JetBrains Mono', monospace; font-size: 1.6rem; font-weight: 700; color: var(--accent); letter-spacing: 2px; word-break: break-all; }
@@ -117,7 +144,7 @@ input:checked + .slider:before { transform: translateX(20px); }
 <body>
 <header>
   <div class="header-inner">
-    <div class="logo"><div class="logo-dot"></div><span>Nonzra</span> <span style="color:var(--muted);font-weight:400;font-size:0.85rem">حل الكبتشا التلقائي</span></div>
+    <div class="logo"><img src="/static/img/logo-mark.svg" alt="Nonzra" class="logo-img" width="34" height="34"><span>Nonzra</span> <span style="color:var(--muted);font-weight:400;font-size:0.85rem">حل الكبتشا التلقائي</span></div>
     <div class="status-indicator" id="serverStatus"><div class="dot" id="statusDot"></div><span id="statusText">جاري التحقق...</span></div>
   </div>
 </header>
@@ -156,6 +183,42 @@ input:checked + .slider:before { transform: translateX(20px); }
   <section class="section">
     <div class="section-header"><h2 class="section-title">أنواع الكبتشا المدعومة</h2><a class="btn btn-outline btn-sm" href="/docs" target="_blank" rel="noopener">توثيق API</a></div>
     <div id="capList" style="line-height:1.9"><span class="stat-sub">جاري التحميل...</span></div>
+  </section>
+
+  <!-- حالة العقل -->
+  <section class="section">
+    <div class="section-header">
+      <h2 class="section-title">العقل الذاتي — ما أعرفه عن نفسي</h2>
+      <button class="btn btn-outline btn-sm" onclick="loadMind()">تحديث</button>
+    </div>
+    <div class="mind-head">
+      <div>
+        <div class="mind-rating" id="mindRating">—</div>
+        <div class="mind-sub">تقييم الكفاءة الذاتية</div>
+      </div>
+      <div style="flex:1;min-width:180px">
+        <div class="mind-mood" id="mindMood">جاري التحميل...</div>
+        <div class="mind-sub" id="mindCycles">0 دورة تعلّم</div>
+      </div>
+      <div style="min-width:200px">
+        <div class="mind-sub">المعايرة (Brier — أقل أفضل)</div>
+        <div class="mind-mood" id="mindBrier">—</div>
+      </div>
+    </div>
+    <div id="mindSkills" style="margin-bottom:14px"></div>
+    <ul class="notes" id="mindNotes"></ul>
+    <div id="mindPlan" style="margin-top:14px;font-size:.85rem;color:var(--muted)"></div>
+  </section>
+
+  <!-- بطاقات المعرفة -->
+  <section class="section">
+    <div class="section-header">
+      <h2 class="section-title">ذخيرة المعرفة</h2>
+      <button class="btn btn-outline btn-sm" onclick="loadKnowledge()">عرض البطاقات</button>
+    </div>
+    <div class="cards-grid" id="knowledgeCards">
+      <div class="card-mini"><p>اضغط «عرض البطاقات» لتحميل ما يعرفه العقل عن كل نوع كبتشا وتقنياته.</p></div>
+    </div>
   </section>
 
   <!-- حل سريع -->

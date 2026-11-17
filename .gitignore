@@ -32,3 +32,8 @@ coverage.xml
 .htmlcov/
 .mypy_cache/
 .ruff_cache/
+
+# ملفات حالة وقت التشغيل
+audit.log
+data/*.json
+.encryption_key

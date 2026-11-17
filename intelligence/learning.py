@@ -1,8 +1,8 @@
 """محرك تعلّم ذاتي لاختيار الاستراتيجية (epsilon-greedy multi-armed bandit)."""
 
+import random
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
-import random
 
 
 @dataclass

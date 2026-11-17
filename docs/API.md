@@ -231,3 +231,56 @@ MIT - للاستخدام المصرح به في الاختبار والمراق�
 - **multipart/form-data**: حقول `file` و`template` مع الحقول النصية مثل `psm=7&preprocess=true` (تستخدمها أمثلة `curl` وأداة الـ CLI)
 
 طلب لنوع محلي (image/text/math/drag/point/slider/rotate) بلا صورة يعيد `400` برسالة عربية واضحة.
+
+## عقل النظام (Mind)
+
+| الطريقة | المسار | الوصف |
+|---------|--------|-------|
+| GET | `/mind` | تقرير العقل: `self_rating`، `skills`، `calibration`، `reflection`، `next_experiment`، `notes`، `mood` |
+| POST | `/mind/plan` | `{captcha_type, difficulty, external_available, prefer_speed}` → المسار المختار + شرح + بدائل |
+| POST | `/mind/observe` | `{captcha_type, success, confidence, latency_ms, error}` → يُعلّم العقل |
+| GET | `/mind/accept` | `?confidence=0.8&threshold=0.7` → قرار قبول بالقيمة المتوقعة |
+| GET | `/mind/skills` | كفاءة كل نوع (Beta posterior، فاصل الثقة، اتجاه EWMA) |
+| GET | `/mind/calibration` | منحنى المعايرة + Brier Score |
+| GET | `/mind/reflect` | الدروس المستفادة ومدى فعّالية النصائح |
+| POST | `/mind/save` | حفظ الحالة على القرص الآن |
+
+### مثال
+
+```bash
+curl -X POST http://localhost:8000/mind/plan \
+  -H "Content-Type: application/json" \
+  -d '{"captcha_type":"slider","difficulty":0.5,"external_available":true}'
+```
+
+```json
+{
+  "chosen": "ensemble_with_fallback",
+  "expected_value": 0.6232,
+  "alternatives": [
+    {"route": "ensemble_with_fallback", "success_probability": 0.84, "expected_value": 0.623},
+    {"route": "local_primary", "success_probability": 0.63, "expected_value": 0.553}
+  ],
+  "explanation": "اخترت ensemble_with_fallback لنوع slider (احتمال نجاح 84% وزمن ~1600ms) — أفضل من local_primary بفارق 0.07",
+  "confidence_target": 0.71,
+  "should_retry": false
+}
+```
+
+## الذخيرة المعرفية
+
+| الطريقة | المسار | الوصف |
+|---------|--------|-------|
+| GET | `/knowledge` | كل البطاقات (`?category=type\|technique\|risk`) |
+| GET | `/knowledge/for/{captcha_type}` | بطاقات النوع + مصائده + شرح قرار العقل |
+| GET | `/knowledge/quiz` | `?limit=5&seed=1` أسئلة تدريب مع الجواب الصحيح |
+| POST | `/knowledge/quiz/answer` | تقييم إجابة وتغذية العقل بها |
+
+## ملفات الحالة على القرص
+
+| الملف | المحتوى |
+|-------|---------|
+| `data/mind_state.json` | دورات التفكير الأخيرة والعدّاد الكلي |
+| `data/calibration.json` | حاويات المعايرة وعدد المشاهدات وBrier |
+| `data/competence.json` | معاملات Beta لكل نوع + EWMA الزمن |
+| `data/.encryption_key` | مفتاح تشفير مفاتيح API (600) |

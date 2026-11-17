@@ -283,6 +283,79 @@ async function retrainModel() {
 
 function clearLogs() { document.getElementById("logs").innerHTML = ""; }
 
+
+function pct(x) { return Math.round((Number(x) || 0) * 100) + "%"; }
+
+function meterClass(rate) {
+  if (rate >= 0.75) return "";
+  if (rate >= 0.55) return "violet";
+  return "amber";
+}
+
+async function loadMind() {
+  try {
+    const d = await api("/mind");
+    const rating = Number(d.self_rating || 0);
+    document.getElementById("mindRating").textContent = pct(rating);
+    document.getElementById("mindRating").style.color =
+      rating >= 0.75 ? "var(--success)" : rating >= 0.55 ? "var(--accent)" : "var(--warning)";
+    document.getElementById("mindMood").textContent = d.mood || "—";
+    document.getElementById("mindCycles").textContent =
+      `${d.cycles || 0} دورة تعلّم · نجاح حديث ${pct(d.recent_success_rate)}`;
+    const brier = d.calibration && d.calibration.brier_score;
+    document.getElementById("mindBrier").textContent =
+      brier === null || brier === undefined ? "لا بيانات كافية بعد" : String(brier);
+
+    const ranking = (d.skills && d.skills.ranking) || [];
+    const skillsEl = document.getElementById("mindSkills");
+    if (ranking.length) {
+      skillsEl.innerHTML = ranking.map(sk => `
+        <div class="skill-row">
+          <span style="color:#cbd5e1">${escapeHtml(sk.captcha_type)}</span>
+          <div class="meter ${meterClass(sk.posterior_mean)}"><i style="width:${Math.round(sk.posterior_mean * 100)}%"></i></div>
+          <span class="stat-sub" style="text-align:left">${pct(sk.posterior_mean)}</span>
+        </div>`).join("");
+    } else {
+      skillsEl.innerHTML = `<div class="stat-sub">لم أجرّب أي نوع بعد — أول حل سيبدأ التعلّم.</div>`;
+    }
+
+    const notes = d.notes || [];
+    document.getElementById("mindNotes").innerHTML = notes
+      .map(n => `<li>${escapeHtml(n)}</li>`).join("");
+
+    const exp = d.next_experiment;
+    document.getElementById("mindPlan").innerHTML = exp
+      ? `<strong style="color:var(--accent)">تجربتي القادمة:</strong> ${escapeHtml(exp.target_type)} — ${escapeHtml(exp.advice)}`
+      : `<span class="stat-sub">العقل راضٍ عن أدائه الحالي ولا يرى تجربة عاجلة.</span>`;
+  } catch (e) {
+    log("فشل تحميل حالة العقل: " + e.message, "warn");
+  }
+}
+
+async function loadKnowledge() {
+  const el = document.getElementById("knowledgeCards");
+  el.innerHTML = `<div class="card-mini"><p>جاري التحميل...</p></div>`;
+  try {
+    const d = await api("/knowledge");
+    const cards = (d.cards || []).slice(0, 12);
+    if (!cards.length) {
+      el.innerHTML = `<div class="card-mini"><p>لا توجد بطاقات.</p></div>`;
+      return;
+    }
+    el.innerHTML = cards.map(c => `
+      <div class="card-mini">
+        <h4>${escapeHtml(c.title)} <span class="stat-sub">· صعوبة ${pct(c.difficulty)}</span></h4>
+        <p>${escapeHtml(c.summary)}</p>
+        ${c.facts && c.facts.length ? `<ul>${c.facts.slice(0, 3).map(f => `<li>${escapeHtml(f)}</li>`).join("")}</ul>` : ""}
+      </div>`).join("");
+  } catch (e) {
+    el.innerHTML = `<div class="card-mini"><p>تعذّر تحميل البطاقات: ${escapeHtml(e.message)}</p></div>`;
+  }
+}
+
+loadMind();
+setInterval(loadMind, 15000);
+
 // تحديث دوري
 setInterval(loadStats, 5000);
 setInterval(loadAutoStatus, 5000);

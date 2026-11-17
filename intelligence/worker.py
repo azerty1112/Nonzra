@@ -1,8 +1,8 @@
 """العامل الخلفي الذاتي: يستهلك قائمة مهام ويعالجها تلقائيًا باستمرار."""
 
 import asyncio
-import uuid
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional

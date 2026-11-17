@@ -1,0 +1,162 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" role="img"
+     aria-label="مخطط معمارية عقل Nonzra الذاتي">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1220"/>
+      <stop offset="100%" stop-color="#111c33"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="50%" stop-color="#22d3ee"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#38bdf8"/>
+    </marker>
+  </defs>
+
+  <rect width="960" height="560" fill="url(#bg)"/>
+  <g opacity="0.25" stroke="#1e293b" stroke-width="1">
+    <path d="M0 80H960M0 160H960M0 240H960M0 320H960M0 400H960M0 480H960"/>
+    <path d="M80 0V560M160 0V560M240 0V560M320 0V560M400 0V560M480 0V560M560 0V560M640 0V560M720 0V560M800 0V560M880 0V560"/>
+  </g>
+
+  <text x="480" y="52" text-anchor="middle" fill="#e2e8f0" font-family="Cairo, system-ui, sans-serif"
+        font-size="30" font-weight="700">عقل Nonzra الذاتي — دورة التعلّم</text>
+  <text x="480" y="80" text-anchor="middle" fill="#64748b" font-family="Cairo, system-ui, sans-serif"
+        font-size="15">تخطيط بالقيمة المتوقعة · معايرة ثقة · كفاءة ذاتية · تأمّل من الأخطاء</text>
+
+  <!-- 1 طلب -->
+  <g>
+    <rect x="40" y="240" width="150" height="90" rx="14" fill="#0f172a" stroke="#1e293b"/>
+    <text x="115" y="275" text-anchor="middle" fill="#38bdf8" font-family="Cairo, sans-serif" font-size="17"
+          font-weight="700">الطلب</text>
+    <text x="115" y="300" text-anchor="middle" fill="#94a3b8" font-family="Cairo, sans-serif" font-size="13">
+      صورة / توكن
+    </text>
+    <text x="115" y="318" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="11">
+      POST /auto
+    </text>
+  </g>
+
+  <!-- 2 تحليل وكشف -->
+  <g>
+    <rect x="230" y="240" width="160" height="90" rx="14" fill="#0f172a" stroke="#1e293b"/>
+    <text x="310" y="272" text-anchor="middle" fill="#22d3ee" font-family="Cairo, sans-serif" font-size="16"
+          font-weight="700">تحليل وكشف</text>
+    <text x="310" y="296" text-anchor="middle" fill="#94a3b8" font-family="Cairo, sans-serif" font-size="12">
+      النوع · الصعوبة · الميزات
+    </text>
+    <text x="310" y="316" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="11">
+      detector + analyzer
+    </text>
+  </g>
+
+  <!-- 3 مخطّط القرار -->
+  <g>
+    <rect x="430" y="215" width="190" height="140" rx="16" fill="#0f172a" stroke="url(#accent)" stroke-width="2"
+          filter="url(#glow)"/>
+    <text x="525" y="250" text-anchor="middle" fill="#f8fafc" font-family="Cairo, sans-serif" font-size="17"
+          font-weight="700">مخطّط القرار</text>
+    <text x="525" y="274" text-anchor="middle" fill="#94a3b8" font-family="Cairo, sans-serif" font-size="12">
+      احتمال × زمن × تكلفة
+    </text>
+    <text x="525" y="296" text-anchor="middle" fill="#38bdf8" font-family="Cairo, sans-serif" font-size="12">
+      محلي · تجميع · خارجي
+    </text>
+    <text x="525" y="322" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="11">
+      planner.plan()
+    </text>
+    <text x="525" y="340" text-anchor="middle" fill="#a78bfa" font-family="monospace" font-size="11">
+      Σ = P(success) − 0.45·t − 0.25·cost
+    </text>
+  </g>
+
+  <!-- 4 تنفيذ -->
+  <g>
+    <rect x="660" y="240" width="150" height="90" rx="14" fill="#0f172a" stroke="#1e293b"/>
+    <text x="735" y="272" text-anchor="middle" fill="#22d3ee" font-family="Cairo, sans-serif" font-size="16"
+          font-weight="700">تنفيذ</text>
+    <text x="735" y="296" text-anchor="middle" fill="#94a3b8" font-family="Cairo, sans-serif" font-size="12">
+      محرّكات الكبتشا
+    </text>
+    <text x="735" y="316" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="11">
+      registry.solve()
+    </text>
+  </g>
+
+  <!-- 5 تقييم -->
+  <g>
+    <rect x="660" y="380" width="150" height="86" rx="14" fill="#0f172a" stroke="#1e293b"/>
+    <text x="735" y="410" text-anchor="middle" fill="#fbbf24" font-family="Cairo, sans-serif" font-size="16"
+          font-weight="700">تقييم النتيجة</text>
+    <text x="735" y="434" text-anchor="middle" fill="#94a3b8" font-family="Cairo, sans-serif" font-size="12">
+      ثقة مُعايَرة
+    </text>
+    <text x="735" y="452" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="11">
+      calibrate()
+    </text>
+  </g>
+
+  <!-- 6 تعلّم -->
+  <g>
+    <rect x="430" y="400" width="190" height="100" rx="14" fill="#0f172a" stroke="#1e293b"/>
+    <text x="525" y="430" text-anchor="middle" fill="#a78bfa" font-family="Cairo, sans-serif" font-size="17"
+          font-weight="700">تعلّم وتأمّل</text>
+    <text x="525" y="454" text-anchor="middle" fill="#94a3b8" font-family="Cairo, sans-serif" font-size="12">
+      كفاءة Beta · دروس الأخطاء
+    </text>
+    <text x="525" y="476" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="11">
+      competence + reflector
+    </text>
+  </g>
+
+  <!-- 7 ذاكرة -->
+  <g>
+    <rect x="230" y="400" width="160" height="100" rx="14" fill="#0f172a" stroke="#1e293b"/>
+    <text x="310" y="430" text-anchor="middle" fill="#38bdf8" font-family="Cairo, sans-serif" font-size="16"
+          font-weight="700">ذاكرة دائمة</text>
+    <text x="310" y="454" text-anchor="middle" fill="#94a3b8" font-family="Cairo, sans-serif" font-size="12">
+      mind_state · knowledge
+    </text>
+    <text x="310" y="476" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="11">
+      data/*.json
+    </text>
+  </g>
+
+  <!-- أسهم -->
+  <g fill="none" stroke="#38bdf8" stroke-width="1.8" marker-end="url(#arrow)" opacity="0.85">
+    <path d="M190 285H226"/>
+    <path d="M390 285H426"/>
+    <path d="M620 275H656"/>
+    <path d="M735 330V376"/>
+    <path d="M660 423H624"/>
+    <path d="M430 445H394"/>
+    <path d="M310 400V334"/>
+  </g>
+
+  <!-- بطاقات المعرفة -->
+  <g opacity="0.9">
+    <rect x="40" y="400" width="160" height="100" rx="14" fill="#0b1220" stroke="#1e293b"
+          stroke-dasharray="5 4"/>
+    <text x="120" y="428" text-anchor="middle" fill="#22d3ee" font-family="Cairo, sans-serif" font-size="15"
+          font-weight="700">المعرفة</text>
+    <text x="120" y="452" text-anchor="middle" fill="#94a3b8" font-family="Cairo, sans-serif" font-size="12">
+      17 بطاقة · كويز
+    </text>
+    <text x="120" y="474" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="11">
+      /knowledge
+    </text>
+  </g>
+
+  <text x="480" y="536" text-anchor="middle" fill="#475569" font-family="Cairo, sans-serif" font-size="12">
+    كل دورة تُحدّث الاحتمالات: ما نجح يُعزَّز، وما فشل يُفسَّر ويُصلَح
+  </text>
+</svg>

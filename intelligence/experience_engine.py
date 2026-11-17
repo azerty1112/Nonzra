@@ -1,10 +1,9 @@
 """محرك الخبرة: يُقيّم مستوى ذكاء النظام ويستخدم الأنماط المتراكمة لتحسين قرارات الحل."""
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
-import time
+from typing import Any, Dict, Optional
 
-from .knowledge_base import KnowledgeBase, CaptchaPattern
+from .knowledge_base import KnowledgeBase
 
 
 @dataclass
@@ -159,7 +158,7 @@ class ExperienceEngine:
         sr = self.profile.success_rate
         level = self.profile.experience_level
         patterns = self.profile.knowledge_patterns
-        
+
         if sr < 0.5 and patterns < 10:
             return "النظام يتعلم للتو. ركز على حل أنواع الكبتشا الأساسية first وزيادةPatterns in knowledge base."
         if sr < 0.7 and level < 5:

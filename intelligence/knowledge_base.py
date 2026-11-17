@@ -1,12 +1,10 @@
 """قاعدة معرفة الأنماط الناجحة: تخزن خصائص الكبتشا والحلول الناجحة للاستفادة منها لاحقاً."""
 
-from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, List, Optional
 import hashlib
 import json
 import os
-import time
-
+from dataclasses import asdict, dataclass, field
+from typing import Any, Dict, List, Optional
 
 KNOWLEDGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "knowledge_base.json")
 

@@ -1,11 +1,9 @@
 """مجموعة بيانات الحل التلقائي والتدريب الذاتي من النتائج المؤكدة."""
 
-from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, List, Optional
 import json
 import os
-import time
-
+from dataclasses import asdict, dataclass, field
+from typing import Any, Dict, List, Optional
 
 DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "training_data.json")
 

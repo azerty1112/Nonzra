@@ -32,6 +32,7 @@ from intelligence import (
     AutoWorker,
     KnowledgeBase,
     ExperienceEngine,
+    Mind,
 )
 
 from api_server.auth import (
@@ -74,6 +75,7 @@ from solver_engine import (
 from solver_engine.synthetic import generate_batch as generate_synthetic_batch
 from solver_engine.db import encrypt_value, decrypt_value
 
+from intelligence.knowledge_corpus import catalog as knowledge_catalog, quiz as knowledge_quiz
 from intelligence.training import CaptchaDataset
 from intelligence.self_improver import SelfImprover
 
@@ -166,6 +168,9 @@ learner = LearningEngine()
 knowledge_base = KnowledgeBase()
 experience_engine = ExperienceEngine(knowledge_base=knowledge_base)
 
+# --------- العقل الذاتي (يُحفظ تعلّمه على القرص) ----------
+mind = Mind()
+
 orchestrator = AutoOrchestrator(
     registry=registry,
     monitor=monitor,
@@ -176,6 +181,7 @@ orchestrator = AutoOrchestrator(
     detector=detector,
     knowledge_base=knowledge_base,
     experience=experience_engine,
+    mind=mind,
 )
 worker = AutoWorker(orchestrator=orchestrator, concurrency=2)
 
@@ -191,6 +197,10 @@ async def lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        try:
+            mind.save()
+        except Exception:  # noqa: BLE001
+            pass
         await scheduled_job_manager.stop_scheduler()
         await worker.stop()
 
@@ -1365,6 +1375,12 @@ async def auto_status(
         "learning": learner.snapshot(),
         "tuner": tuner.snapshot(),
         "monitor": monitor.report(),
+        "mind": {
+            "self_rating": mind.competence.self_rating(),
+            "cycles": mind.total_cycles,
+            "mood": mind._mood(),
+            "next_experiment": mind.next_experiment(),
+        },
     }
 
 
@@ -1391,7 +1407,18 @@ async def feedback(
         error=None,
     )
     monitor.record(event)
-    return {"ok": True, "reward": round(reward, 3), "learning": learner.snapshot()}
+    mind.learn(
+        captcha_type=req.captcha_type,
+        success=req.success,
+        confidence=req.confidence,
+        latency_ms=req.response_time_ms,
+    )
+    return {
+        "ok": True,
+        "reward": round(reward, 3),
+        "learning": learner.snapshot(),
+        "self_rating": mind.competence.self_rating(),
+    }
 
 
 # --------- مفاتيح API ----------
@@ -2021,6 +2048,200 @@ async def bulk_status(
     bulk["failed"] = failed
     bulk["jobs"] = job_statuses
     return bulk
+
+
+# --------- العقل الذاتي: التقرير، التخطيط، والتأمّل ----------
+
+class MindPlanRequest(BaseModel):
+    captcha_type: str = "image"
+    difficulty: float = Field(0.5, ge=0.0, le=1.0)
+    external_available: bool = False
+    prefer_speed: bool = False
+
+
+class MindObserveRequest(BaseModel):
+    captcha_type: str = "image"
+    success: bool
+    confidence: float = Field(0.0, ge=0.0, le=1.0)
+    latency_ms: int = Field(0, ge=0)
+    error: Optional[str] = None
+
+
+@app.get("/mind", tags=["intelligence"])
+@limiter.limit("60/minute")
+async def mind_report(
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> Dict[str, Any]:
+    """تقرير العقل الذاتي: مهاراته، معايرة ثقته، دروسه، وخطته القادمة."""
+    _auth(credentials)
+    report = mind.self_report()
+    report["notes"] = mind.notes()
+    return report
+
+
+@app.post("/mind/plan", tags=["intelligence"])
+@limiter.limit("120/minute")
+async def mind_plan(
+    request: Request, req: MindPlanRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    """يسأل العقل: ما أفضل مسار لهذا النوع الآن؟ ولماذا؟"""
+    _auth(credentials)
+    decision = mind.think(
+        captcha_type=req.captcha_type,
+        difficulty=req.difficulty,
+        external_available=req.external_available,
+        prefer_speed=req.prefer_speed,
+    )
+    return decision.to_dict()
+
+
+@app.post("/mind/observe", tags=["intelligence"])
+@limiter.limit("120/minute")
+async def mind_observe(
+    request: Request, req: MindObserveRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    """يغذّي العقل بنتيجة خارجية (من عميل أو متصفح) ليتعلّم منها."""
+    _auth(credentials)
+    cycle = mind.learn(
+        captcha_type=req.captcha_type,
+        success=req.success,
+        confidence=req.confidence,
+        latency_ms=req.latency_ms,
+        error=req.error,
+    )
+    return {
+        "cycle": cycle.to_dict(),
+        "self_rating": mind.competence.self_rating(),
+        "notes": mind.notes()[:3],
+    }
+
+
+@app.get("/mind/accept", tags=["intelligence"])
+@limiter.limit("120/minute")
+async def mind_accept(
+    request: Request,
+    confidence: float = Query(0.7, ge=0.0, le=1.0),
+    threshold: Optional[float] = Query(None, ge=0.0, le=1.0),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    """هل نقبل نتيجة بثقة معيّنة أم نعيد المحاولة؟ (قرار بالقيمة المتوقعة)."""
+    _auth(credentials)
+    return mind.should_accept(confidence, threshold)
+
+
+@app.get("/mind/skills", tags=["intelligence"])
+@limiter.limit("60/minute")
+async def mind_skills(
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> Dict[str, Any]:
+    """كفاءة النظام لكل نوع: ترتيب، نقاط قوة وضعف، وتقييم عام."""
+    _auth(credentials)
+    return mind.competence.snapshot()
+
+
+@app.get("/mind/calibration", tags=["intelligence"])
+@limiter.limit("60/minute")
+async def mind_calibration(
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> Dict[str, Any]:
+    """منحنى المعايرة: كيف تُترجم الثقة الخامّة إلى احتمال نجاح فعلي."""
+    _auth(credentials)
+    return mind.calibrator.snapshot()
+
+
+@app.get("/mind/reflect", tags=["intelligence"])
+@limiter.limit("60/minute")
+async def mind_reflect(
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> Dict[str, Any]:
+    """الدروس المستفادة من الإخفاقات ومدى فعّالية النصائح."""
+    _auth(credentials)
+    snapshot = mind.reflector.snapshot()
+    snapshot["next_experiment"] = mind.next_experiment()
+    return snapshot
+
+
+@app.post("/mind/save", tags=["intelligence"])
+@limiter.limit("10/minute")
+async def mind_save(
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> Dict[str, Any]:
+    """يحفظ حالة العقل (معايرة، كفاءة، دورات) على القرص الآن."""
+    _auth(credentials)
+    mind.save()
+    return {"ok": True, "cycles": mind.total_cycles}
+
+
+# --------- الذخيرة المعرفية: بطاقات معلومات وكويز ----------
+
+@app.get("/knowledge", tags=["intelligence"])
+@limiter.limit("120/minute")
+async def list_knowledge(
+    request: Request,
+    category: Optional[str] = Query(None, description="type / technique / risk"),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    """كل بطاقات المعرفة (معلومات، تقنيات، مصائد) مرتبة حسب الفئة."""
+    _auth(credentials)
+    cards = knowledge_catalog(category)
+    return {
+        "count": len(cards),
+        "category": category,
+        "cards": cards,
+    }
+
+
+@app.get("/knowledge/for/{captcha_type}", tags=["intelligence"])
+@limiter.limit("120/minute")
+async def knowledge_for_type(
+    request: Request, captcha_type: str,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    """معرفة العقل عن نوع معيّن + شرح قراره ومصائده."""
+    _auth(credentials)
+    return mind.explain(captcha_type)
+
+
+@app.get("/knowledge/quiz", tags=["intelligence"])
+@limiter.limit("60/minute")
+async def knowledge_quiz_endpoint(
+    request: Request,
+    limit: int = Query(5, ge=1, le=20),
+    seed: Optional[int] = Query(None),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    """أسئلة تدريب مولّدة من الذخيرة (لتقييم معرفة النظام/المستخدم)."""
+    _auth(credentials)
+    items = knowledge_quiz(limit=limit, seed=seed)
+    return {"count": len(items), "questions": items}
+
+
+@app.post("/knowledge/quiz/answer", tags=["intelligence"])
+@limiter.limit("120/minute")
+async def knowledge_quiz_answer(
+    request: Request,
+    card: str = Query(...),
+    chosen_index: int = Query(..., ge=0),
+    correct_index: int = Query(..., ge=0),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    """يقيّم إجابة ويغذّي العقل بنتيجة الفهم (نجاح/إخفاق معرفي)."""
+    _auth(credentials)
+    correct = chosen_index == correct_index
+    cycle = mind.learn(
+        captcha_type=f"knowledge:{card}",
+        success=correct,
+        confidence=0.9 if correct else 0.4,
+        latency_ms=0,
+        error=None if correct else f"خطأ معرفي في البطاقة {card}",
+    )
+    return {
+        "correct": correct,
+        "lesson": cycle.lesson,
+        "self_rating": mind.competence.self_rating(),
+    }
 
 
 # --------- أدوات مساعدة: العمليات الحسابية والبيانات الصناعية ----------

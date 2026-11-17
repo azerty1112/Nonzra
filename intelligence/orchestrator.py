@@ -1,28 +1,29 @@
 """المنسّق الذاتي: خط أنابيب حل كامل يعمل بذكاء ودون تدخل بشري."""
 
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
-import time
 
-import numpy as np
 import cv2
+import numpy as np
 
 from solver_engine.base import CaptchaType, SolverResult
-from solver_engine.registry import SolverRegistry
 from solver_engine.image import ImageSolveConfig
+from solver_engine.registry import SolverRegistry
 
 from .analysis import CaptchaAnalyzer
 from .captcha_knowledge import (
     CAPTCHA_TYPES,
-    get_strategy,
-    get_preprocess,
     difficulty_score,
+    get_preprocess,
+    get_strategy,
     seed_knowledge_base,
 )
 from .detector import AutoDetector, Detection
 from .experience_engine import ExperienceEngine
 from .knowledge_base import KnowledgeBase
 from .learning import LearningEngine
+from .mind import Mind, MindCycle
 from .monitor import IntelligentMonitor, SolveEvent
 from .solver_strategy import IntelligentSolverStrategy
 from .tuner import AdaptiveTuner
@@ -41,6 +42,7 @@ class AutoResult:
     alerts: List[Dict[str, Any]] = field(default_factory=list)
     total_time_ms: int = 0
     experience: Optional[Dict[str, Any]] = None
+    mind: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -54,6 +56,7 @@ class AutoResult:
             "alerts": self.alerts,
             "total_time_ms": self.total_time_ms,
             "experience": self.experience,
+            "mind": self.mind,
         }
 
 
@@ -74,6 +77,7 @@ class AutoOrchestrator:
         external_available: bool = False,
         nvidia_api_key: Optional[str] = None,
         nvidia_api_endpoint: Optional[str] = None,
+        mind: Optional[Mind] = None,
     ) -> None:
         self.registry = registry
         self.monitor = monitor or IntelligentMonitor()
@@ -85,6 +89,7 @@ class AutoOrchestrator:
         self.knowledge_base = knowledge_base or KnowledgeBase()
         seed_knowledge_base(self.knowledge_base)
         self.experience = experience or ExperienceEngine(knowledge_base=self.knowledge_base)
+        self.mind = mind or Mind()
         self.external_available = external_available
         self._nvidia_api_key = nvidia_api_key or __import__("os").environ.get("NVIDIA_API_KEY", "")
         self._nvidia_api_endpoint = nvidia_api_endpoint or __import__("os").environ.get("NVIDIA_API_ENDPOINT", "")
@@ -202,6 +207,16 @@ class AutoOrchestrator:
             f"استراتيجية متعلمة={learned_arm} (تحليلي: {decision.strategy})"
         )
 
+        # 3.5) تخطيط العقل بالقيمة المتوقعة (يُدمج مع الاستراتيجية المعرفية)
+        mind_decision = self.mind.think(
+            captcha_type=ctype.value,
+            difficulty=diff if diff else (analysis.difficulty_score if analysis else 0.5),
+            external_available=bool(self.external_available),
+            prefer_speed=bool(extra.get("prefer_speed", False)),
+        )
+        trace.append(f"قرار العقل: {mind_decision.explanation}")
+        mind_cycle: Optional[MindCycle] = None
+
         # 4) الضبط التلقائي للمعاملات (من قاعدة المعرفة أولًا، ثم الضبط التكيفي)
         features = analysis.features if analysis else {}
         preprocess_kb = get_preprocess(ctype.value)
@@ -238,7 +253,7 @@ class AutoOrchestrator:
         )
 
         # 6) التقييم والتصعيد التلقائي
-        threshold = decision.confidence_threshold
+        threshold = max(decision.confidence_threshold, mind_decision.confidence_target)
         while (
             (not result.success or result.confidence < threshold)
             and escalated < max_escalations
@@ -325,6 +340,16 @@ class AutoOrchestrator:
             error=result.error,
         )
         new_alerts = self.monitor.record(event)
+        mind_cycle = self.mind.learn(
+            captcha_type=ctype.value,
+            success=result.success,
+            confidence=result.confidence,
+            latency_ms=result.response_time_ms,
+            decision=mind_decision,
+            error=result.error,
+        )
+        if mind_cycle.lesson:
+            trace.append(f"درس مستفاد: {mind_cycle.lesson}")
 
         # 8) تسجيل الحل في محرك الخبرة الذاتي
         features_for_exp = features if features else {}
@@ -357,6 +382,12 @@ class AutoOrchestrator:
             alerts=[a.__dict__ for a in new_alerts],
             total_time_ms=total_ms,
             experience=self.experience.status(),
+            mind={
+                "decision": mind_decision.to_dict(),
+                "calibrated_confidence": self.mind.calibrator.calibrate(result.confidence),
+                "self_rating": self.mind.competence.self_rating(),
+                "lesson": mind_cycle.lesson if mind_cycle else None,
+            },
         )
 
     def _attempt(

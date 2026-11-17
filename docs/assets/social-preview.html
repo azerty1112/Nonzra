@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<title>Nonzra — معاينة اجتماعية</title>
+<style>
+  @page { size: 1200px 630px; margin: 0; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    width: 1200px; height: 630px; overflow: hidden;
+    font-family: 'Cairo', 'Segoe UI', Tahoma, sans-serif;
+    background: radial-gradient(circle at 82% 12%, rgba(56,189,248,.22), transparent 42%),
+                radial-gradient(circle at 12% 96%, rgba(167,139,250,.20), transparent 46%),
+                #0b1220;
+    color: #f1f5f9; display: flex; align-items: center; padding: 64px 72px;
+  }
+  .frame { display: flex; gap: 56px; align-items: center; width: 100%; }
+  .brand { flex: 1; }
+  .logo-row { display: flex; align-items: center; gap: 18px; margin-bottom: 26px; }
+  .logo-row img { width: 74px; height: 74px; }
+  .name { font-size: 46px; font-weight: 700; letter-spacing: .5px;
+    background: linear-gradient(90deg,#38bdf8,#22d3ee,#a78bfa); -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent; }
+  .tag { font-size: 15px; color: #64748b; margin-top: 4px; }
+  h1 { font-size: 40px; line-height: 1.35; margin-bottom: 18px; }
+  h1 span { color: #38bdf8; }
+  p { font-size: 19px; line-height: 1.75; color: #94a3b8; max-width: 620px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 26px; }
+  .chip { font-size: 14px; padding: 7px 14px; border-radius: 999px; color: #7dd3fc;
+    background: rgba(56,189,248,.10); border: 1px solid rgba(56,189,248,.32); }
+  .panel { width: 460px; background: rgba(15,23,42,.86); border: 1px solid #1e293b;
+    border-radius: 20px; padding: 26px 26px 22px; box-shadow: 0 30px 70px rgba(0,0,0,.5); }
+  .panel h2 { font-size: 16px; color: #94a3b8; font-weight: 600; margin-bottom: 18px;
+    display: flex; justify-content: space-between; align-items: center; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #22d3ee; box-shadow: 0 0 10px #22d3ee; }
+  .row { margin-bottom: 16px; }
+  .row .label { display: flex; justify-content: space-between; font-size: 13px; color: #cbd5e1;
+    margin-bottom: 7px; }
+  .bar { height: 9px; border-radius: 6px; background: #1e293b; overflow: hidden; }
+  .bar i { display: block; height: 100%; border-radius: 6px;
+    background: linear-gradient(90deg,#38bdf8,#22d3ee); }
+  .bar.violet i { background: linear-gradient(90deg,#a78bfa,#818cf8); }
+  .bar.amber i { background: linear-gradient(90deg,#fbbf24,#f59e0b); }
+  .quote { margin-top: 18px; font-size: 14px; color: #7dd3fc; background: rgba(56,189,248,.07);
+    border: 1px dashed rgba(56,189,248,.3); border-radius: 12px; padding: 12px 14px; line-height: 1.6; }
+  .foot { position: absolute; bottom: 26px; left: 72px; font-size: 13px; color: #475569; }
+</style>
+</head>
+<body>
+  <div class="frame">
+    <div class="brand">
+      <div class="logo-row">
+        <img src="../../web/static/img/logo.svg" alt="">
+        <div>
+          <div class="name">Nonzra</div>
+          <div class="tag">عقل ذاتي لحل الكبتشا · مفتوح المصدر</div>
+        </div>
+      </div>
+      <h1>يتعلّم من كل محاولة، <span>ويشرح قراره</span> بلغته الخاصة</h1>
+      <p>معايرة ثقة حقيقية، تقدير كفاءة ذاتي لكل نوع، ومخطّط قرار بالقيمة المتوقعة — بدل قواعد ثابتة وعتبات عمياء.</p>
+      <div class="chips">
+        <span class="chip">10 أنواع مدعومة</span>
+        <span class="chip">17 بطاقة معرفة</span>
+        <span class="chip">73 اختبارًا</span>
+        <span class="chip">Prometheus</span>
+        <span class="chip">Docker</span>
+      </div>
+    </div>
+    <div class="panel">
+      <h2><span>حالة العقل الآن</span><span class="dot"></span></h2>
+      <div class="row">
+        <div class="label"><span>كبتشا الصور</span><span>92%</span></div>
+        <div class="bar"><i style="width:92%"></i></div>
+      </div>
+      <div class="row">
+        <div class="label"><span>السلايدر</span><span>78%</span></div>
+        <div class="bar"><i style="width:78%"></i></div>
+      </div>
+      <div class="row">
+        <div class="label"><span>العمليات الحسابية</span><span>85%</span></div>
+        <div class="bar violet"><i style="width:85%"></i></div>
+      </div>
+      <div class="row">
+        <div class="label"><span>Turnstile</span><span>34%</span></div>
+        <div class="bar amber"><i style="width:34%"></i></div>
+      </div>
+      <div class="quote">«أنا قوي في الصور النصية، وأحتاج تحسين Turnstile — لذا ستكون تجربتي القادمة تحسين المعالجة المسبقة.»</div>
+    </div>
+  </div>
+  <div class="foot">github.com/azerty1112/Nonzra</div>
+</body>
+</html>

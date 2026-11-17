@@ -1,29 +1,34 @@
 """طبقة الذكاء المتكاملة والذاتية لمراقبة، حل، تفاعل بشري، وتحليل الكبتشا."""
 
+from .analysis import CaptchaAnalysis, CaptchaAnalyzer
+from .calibration import CalibrationBin, ConfidenceCalibrator
 from .captcha_knowledge import (
-    CaptchaTypeInfo,
     CAPTCHA_TYPES,
+    PREPROCESS_BY_TYPE,
     SEED_TEXT_PATTERNS,
     STRATEGY_BY_TYPE,
-    PREPROCESS_BY_TYPE,
+    CaptchaTypeInfo,
+    difficulty_score,
+    get_preprocess,
+    get_strategy,
     get_type_info,
     list_types,
-    get_strategy,
-    get_preprocess,
-    difficulty_score,
     seed_knowledge_base,
 )
-from .detector import Detection, AutoDetector
-from .tuner import TuneStats, AdaptiveTuner
+from .competence import CompetenceEstimator, TypeCompetence
+from .decision_planner import Decision, DecisionPlanner, Route
+from .detector import AutoDetector, Detection
+from .experience_engine import ExperienceEngine, ExperienceProfile
+from .human_behavior import HumanBehavior, HumanProfile
+from .knowledge_base import KNOWLEDGE_FILE, CaptchaPattern, KnowledgeBase
 from .learning import ArmStats, LearningEngine
-from .orchestrator import AutoResult, AutoOrchestrator
-from .worker import WorkerJob, AutoWorker
-from .experience_engine import ExperienceProfile, ExperienceEngine
-from .monitor import SolveEvent, Alert, IntelligentMonitor
-from .analysis import CaptchaAnalysis, CaptchaAnalyzer
-from .solver_strategy import SolveDecision, IntelligentSolverStrategy
-from .human_behavior import HumanProfile, HumanBehavior
-from .knowledge_base import CaptchaPattern, KnowledgeBase, KNOWLEDGE_FILE
+from .mind import Mind, MindCycle
+from .monitor import Alert, IntelligentMonitor, SolveEvent
+from .orchestrator import AutoOrchestrator, AutoResult
+from .reflector import Lesson, SelfReflector, classify_error
+from .solver_strategy import IntelligentSolverStrategy, SolveDecision
+from .tuner import AdaptiveTuner, TuneStats
+from .worker import AutoWorker, WorkerJob
 
 __all__ = [
     "SolveEvent",
@@ -48,6 +53,18 @@ __all__ = [
     "CaptchaPattern",
     "KnowledgeBase",
     "KNOWLEDGE_FILE",
+    "CalibrationBin",
+    "ConfidenceCalibrator",
+    "TypeCompetence",
+    "CompetenceEstimator",
+    "Route",
+    "Decision",
+    "DecisionPlanner",
+    "Lesson",
+    "SelfReflector",
+    "classify_error",
+    "Mind",
+    "MindCycle",
     "ExperienceProfile",
     "ExperienceEngine",
     "CaptchaTypeInfo",

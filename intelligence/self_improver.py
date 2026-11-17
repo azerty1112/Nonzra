@@ -1,7 +1,7 @@
 """المحسّن الذاتي: حلقة تغذية راجعة تُدرّب النموذج من النتائج المؤكدة وتُضبط الاستراتيجيات."""
 
-from typing import Any, Dict, Optional
 import time
+from typing import Any, Dict, Optional
 
 from .training import CaptchaDataset
 
@@ -56,7 +56,7 @@ class SelfImprover:
                 "dataset": stats,
             }
         try:  # torch اختياري
-            import torch  # type: ignore
+            pass  # type: ignore
         except Exception:
             return {
                 "retrained": False,
