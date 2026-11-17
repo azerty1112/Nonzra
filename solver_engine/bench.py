@@ -47,7 +47,8 @@ def render_captcha(
     rng = random.Random(seed)
     dark = rng.random() < 0.35
     back = rng.randint(25, 70) if dark else rng.randint(215, 252)
-    canvas = np.full((height, width, 3), back, np.uint8)
+    canvas: np.ndarray = np.full((height, width, 3), back, np.uint8)
+
     fore = (245, 245, 245) if dark else (15, 15, 15)
     realistic = tier == REALISTIC
     if realistic:
@@ -79,8 +80,10 @@ def render_captcha(
         matrix = cv2.getRotationMatrix2D(
             (tile.shape[1] / 2, tile.shape[0] / 2), rng.uniform(-18, 18), 1.0
         )
-        tile = cv2.warpAffine(
-            tile, matrix, (tile.shape[1], tile.shape[0]), borderValue=(back,) * 3
+        tile = np.asarray(
+            cv2.warpAffine(
+                tile, matrix, (tile.shape[1], tile.shape[0]), borderValue=(back,) * 3
+            )
         )
         x0 = margin + index * slot + rng.randint(0, max(0, slot - tw - 2))
         y0 = max(0, (height - tile.shape[0]) // 2 + rng.randint(-6, 6))

@@ -36,7 +36,7 @@ def _draw_captcha_text(
     width: int,
     height: int,
 ) -> np.ndarray:
-    image = np.full((height, width, 3), rng.randint(200, 255), dtype=np.uint8)
+    image: np.ndarray = np.full((height, width, 3), rng.randint(200, 255), dtype=np.uint8)
     # تدرّج خفيف في الخلفية
     gradient = np.linspace(0, rng.randint(10, 40), width, dtype=np.uint8)
     image[:, :, 0] = np.clip(image[:, :, 0] - gradient, 0, 255)
@@ -70,11 +70,13 @@ def _draw_captcha_text(
     angle = rng.uniform(-12, 12)
     center = (width / 2.0, height / 2.0)
     matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
-    image = cv2.warpAffine(
-        image,
-        matrix,
-        (width, height),
-        borderMode=cv2.BORDER_REPLICATE,
+    image = np.asarray(
+        cv2.warpAffine(
+            image,
+            matrix,
+            (width, height),
+            borderMode=cv2.BORDER_REPLICATE,
+        )
     )
 
     # تشويش غاوسي

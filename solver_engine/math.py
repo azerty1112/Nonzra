@@ -74,9 +74,9 @@ def _eval_node(node: ast.AST) -> float:
             raise _SafeMathError("أُس كبير غير مسموح")
         if isinstance(node.op, (ast.Div, ast.FloorDiv, ast.Mod)) and right == 0:
             raise _SafeMathError("قسمة على صفر")
-        return _BIN_OPS[type(node.op)](left, right)
+        return _BIN_OPS[type(node.op)](left, right)  # type: ignore[operator]
     if isinstance(node, ast.UnaryOp) and type(node.op) in _UNARY_OPS:
-        return _UNARY_OPS[type(node.op)](_eval_node(node.operand))
+        return _UNARY_OPS[type(node.op)](_eval_node(node.operand))  # type: ignore[operator]
     raise _SafeMathError("تعبير غير مسموح")
 
 

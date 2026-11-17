@@ -101,7 +101,7 @@ except Exception:  # noqa: BLE001
 
             return deco
 
-    def get_remote_address(*args: Any, **kwargs: Any) -> str:  # type: ignore[no-redef]
+    def get_remote_address(*args: Any, **kwargs: Any) -> str:  # type: ignore[misc]
         return "local"
 
 try:

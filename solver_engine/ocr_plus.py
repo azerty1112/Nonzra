@@ -220,8 +220,8 @@ def glyph_boxes(image: np.ndarray) -> List[Tuple[int, int, int, int]]:
         return []
     h, w = mask.shape[:2]
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-    cleaned = cv2.morphologyEx(mask * 255, cv2.MORPH_OPEN, kernel)
-    count, _, stats, _ = cv2.connectedComponentsWithStats(cleaned, 8)
+    cleaned = cv2.morphologyEx((mask * 255).astype(np.uint8), cv2.MORPH_OPEN, kernel)
+    count, _, stats, _ = cv2.connectedComponentsWithStats(cleaned, connectivity=8)
     boxes: List[Tuple[int, int, int, int]] = []
     for index in range(1, count):
         x, y, bw, bh, area = stats[index]
@@ -458,7 +458,7 @@ def vote(
         tally: Dict[str, float] = {}
         for text, confidence in contenders:
             tally[text[index]] = tally.get(text[index], 0.0) + confidence
-        winner = max(tally, key=tally.get)
+        winner = max(tally, key=lambda ch: tally[ch])
         chars.append(winner)
         per_position_share.append(tally[winner] / sum(tally.values()))
 

@@ -187,7 +187,7 @@ class ImageCaptchaSolver(BaseSolver):
             elapsed = int((time.time() - start) * 1000)
             metadata: dict = {"chars": len(text), "method": method}
             # أثر القراءة العميقة: هل الثقة الخام عُدّلت؟ وكم طريقة عرض جُرّبت؟
-            if neural is not None and getattr(neural, "variants_tried", 0):
+            if neural is not None and int(getattr(neural, "variants_tried", 0) or 0):
                 metadata.update(neural.to_dict())
                 metadata["method"] = method
             return SolverResult(

@@ -118,7 +118,7 @@ class CaptchaCNN(nn.Module if _TORCH_AVAILABLE and nn is not None else object): 
             for i in range(top_indices.size(1)):
                 char_idx = top_indices[0, i].item()
                 char_prob = top_probs[0, i].item()
-                char = self.idx_to_char.get(char_idx, "?")
+                char = self.idx_to_char.get(int(char_idx), "?")
                 predictions.append(
                     CaptchaCharPrediction(
                         character=char,
