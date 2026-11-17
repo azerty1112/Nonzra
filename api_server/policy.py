@@ -48,6 +48,12 @@ class RuntimePolicy:
     max_batch_items: int
     concurrency: int
     max_concurrency: int
+    #: أقصى حجم لصورة واحدة بعد فك ترميز base64 (بايت). 0 = بلا حد.
+    max_image_bytes: int
+    #: أقصى حجم لجسم الطلب كاملًا (بايت). 0 = بلا حد.
+    max_body_bytes: int
+    #: هل نصدّق ترويسة X-Forwarded-For؟ صحيح فقط خلف وكيل عكسي موثوق.
+    trust_forwarded_for: bool
 
     @property
     def rate_limited(self) -> bool:
@@ -65,6 +71,9 @@ class RuntimePolicy:
             "max_batch_items": self.max_batch_items,
             "concurrency": self.concurrency,
             "max_concurrency": self.max_concurrency,
+            "max_image_bytes": self.max_image_bytes,
+            "max_body_bytes": self.max_body_bytes,
+            "trust_forwarded_for": self.trust_forwarded_for,
             "mode": "unlimited" if self.unlimited else "guarded",
         }
 
@@ -84,6 +93,9 @@ def load_policy() -> RuntimePolicy:
     | ``NONECAP_MAX_BATCH`` | ``200`` | سقف عناصر الطلب الجماعي |
     | ``NONECAP_CONCURRENCY`` | ``4`` | عمال الحل بالتوازي |
     | ``NONECAP_MAX_CONCURRENCY`` | ``16`` | سقف التوسّع التلقائي |
+    | ``NONECAP_MAX_IMAGE_BYTES`` | ``8388608`` (8 ميغا) | أقصى صورة بعد فك الترميز |
+    | ``NONECAP_MAX_BODY_BYTES`` | ``12582912`` (12 ميغا) | أقصى جسم طلب كامل |
+    | ``NONECAP_TRUST_FORWARDED_FOR`` | ``false`` | تصديق X-Forwarded-For (للوكيل العكسي فقط) |
     """
     unlimited = _env_bool("NONECAP_UNLIMITED", True)
     require_key = _env_bool("NONECAP_REQUIRE_API_KEY", False)
@@ -108,6 +120,11 @@ def load_policy() -> RuntimePolicy:
         max_batch_items=max(1, _env_int("NONECAP_MAX_BATCH", 200)),
         concurrency=max(1, _env_int("NONECAP_CONCURRENCY", 4)),
         max_concurrency=max(1, _env_int("NONECAP_MAX_CONCURRENCY", 16)),
+        max_image_bytes=max(0, _env_int("NONECAP_MAX_IMAGE_BYTES", 8 * 1024 * 1024)),
+        max_body_bytes=max(0, _env_int("NONECAP_MAX_BODY_BYTES", 12 * 1024 * 1024)),
+        # افتراضيًا لا نصدّق الترويسة: أي عميل يمكنه تزويرها وتجاوز الحظر
+        # وتحديد المعدل. خلف وكيل عكسي تُفعَّل صراحةً.
+        trust_forwarded_for=_env_bool("NONECAP_TRUST_FORWARDED_FOR", False),
     )
 
 
