@@ -7,6 +7,7 @@ import pytesseract
 from PIL import Image
 
 from .base import SolverResult, CaptchaType, BaseSolver
+from .ocr import read_text as read_text_neural
 from .preprocess import (
     load_image,
     load_image_bytes,
@@ -136,20 +137,34 @@ class ImageCaptchaSolver(BaseSolver):
             else:
                 pil_image = to_pil(image)
 
-            # --------- المحاولة الأولى: Tesseract إن توفّر ----------
+            # --------- المحاولة 1: قراءة عصبية (RapidOCR) — الأعلى دقة ----------
             text = ""
-            try:
-                custom_config = f"--psm {cfg.psm} --oem {cfg.oem}"
-                if cfg.whitelist:
-                    custom_config += f" -c tessedit_char_whitelist={cfg.whitelist}"
-                text = pytesseract.image_to_string(pil_image, config=custom_config).strip()
-                text = "".join(ch for ch in text if ch.isalnum())
-            except Exception:
-                text = ""
+            method = "neural_ocr"
+            confidence = 0.0
+            neural = read_text_neural(
+                np.array(pil_image.convert("L")) if hasattr(pil_image, "convert") else image,
+                allowlist=cfg.whitelist,
+            )
+            if neural.success:
+                text = neural.text
+                confidence = neural.confidence
+                method = f"neural_ocr:{neural.engine}"
 
-            # --------- الحل الاحتياطي إذا فشل Tesseract ----------
-            method = "tesseract"
-            confidence = 0.7 if text else 0.0
+            # --------- المحاولة 2: Tesseract إن توفّر ولم تنجح العصبية ----------
+            if not text:
+                try:
+                    custom_config = f"--psm {cfg.psm} --oem {cfg.oem}"
+                    if cfg.whitelist:
+                        custom_config += f" -c tessedit_char_whitelist={cfg.whitelist}"
+                    text = pytesseract.image_to_string(pil_image, config=custom_config).strip()
+                    text = "".join(ch for ch in text if ch.isalnum())
+                    if text:
+                        confidence = 0.7
+                        method = "tesseract"
+                except Exception:
+                    text = ""
+
+            # --------- الحل الاحتياطي: مطابقة القوالب ----------
             if (cfg.segment and not text) or (not text and cfg.segment is False):
                 try:
                     fb_text, fb_conf = _fallback_ocr(image)

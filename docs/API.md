@@ -213,10 +213,33 @@ MIT - للاستخدام المصرح به في الاختبار والمراق�
 ## `GET /metrics`
 صيغة Prometheus النصية القياسية (`text/plain; version=0.0.4`) — صالحة للسكراب مباشرة. تعيد `503` إذا لم تكن `prometheus-client` مثبتة.
 
+## hCaptcha مباشرة (بلا خدمة مدفوعة)
+
+| الطريقة | المسار | الوصف |
+|---------|--------|-------|
+| GET | `/hcaptcha/probe` | `?sitekey=&url=` → هل هذه الشبكة تصل إلى hCaptcha؟ + خطأ صريح + تلميح وكيل + حالة OCR |
+| GET | `/ocr/engines` | المحرّكات المتاحة فعلًا وترتيب الأفضلية |
+| POST | `/hcaptcha/live` | `{sitekey, url, host?, max_rounds?}` → حلّ عبر البروتوكول العام: `{success, token, answer, confidence, response_time_ms, error, metadata}` |
+
+```bash
+curl "http://localhost:8000/hcaptcha/probe"
+curl -X POST http://localhost:8000/hcaptcha/live \
+  -H 'content-type: application/json' \
+  -d '{"sitekey":"10000000-ffff-ffff-ffff-000000000001","url":"https://accounts.hcaptcha.com/demo"}'
+```
+
+`metadata.stage` يبيّن أين توقف المسار (`checksiteconfig`, `getcaptcha`, `parse`, `checkcaptcha`).
+راجع [`HCAPTCHA_FREE.md`](HCAPTCHA_FREE.md) للحدود ولطريقة تمرير وكيل.
+
 ## متغيرات البيئة
 
 | المتغير | الوصف |
 |---------|-------|
+| `NONECAP_HCAPTCHA_PROXY` | وكيل مخصّص لطلبات hCaptcha (يعمل عندما يحجب المزوّد النطاق) |
+| `NONECAP_PROXY` | وكيل عام لكل الاستدعاءات الخارجية (http/socks5) |
+| `NONECAP_TUNNEL_HEADER` | ترويسة تُضاف لطلبات hCaptcha عبر نفقك، مثال `X-Tunnel-Auth: secret` |
+| `NONECAP_HTTP_TIMEOUT` | مهلة الاستدعاءات الخارجية بالثواني (افتراضي 60) |
+| `NONECAP_HCAPTCHA_BASE` | عنوان بديل لخدمة hCaptcha (مرآة/بوابة محلية) |
 | `DATABASE_URL` | رابط قاعدة البيانات (افتراضيًا `sqlite:///nonecap_clone.db`) |
 | `NONECAP_ENCRYPTION_KEY` | مفتاح تشفير ثابت لمفاتيح API (إن لم يُحدَّد يُحفظ في `data/.encryption_key`) |
 | `NONECAP_KEY_FILE` | مسار ملف مفتاح التشفير |

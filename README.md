@@ -273,6 +273,9 @@ nonecap-clone/
 │   ├── preprocess.py           # معالجات الصور (otsu, adaptive, denoise, deskew, segment)
 │   ├── image.py                # حلّال صور نصية (Tesseract OCR)
 │   ├── hcaptcha.py             # hCaptcha (محلي + خدمة خارجية)
+│   ├── hcaptcha_live.py        # حلّ hCaptcha مباشرة عبر بروتوكوله العام (بلا خدمة مدفوعة)
+│   ├── ocr.py                  # OCR موحّد: RapidOCR ← Tesseract ← قالب
+│   ├── net.py                  # إعدادات الشبكة/الوكيل للاستدعاءات الخارجية
 │   ├── recaptcha.py            # reCAPTCHA v2/v3
 │   ├── turnstile.py            # Cloudflare Turnstile
 │   ├── drag.py                 # Drag puzzle (template matching)
@@ -412,6 +415,27 @@ curl -X POST http://localhost:8000/solve/image \
   -F "file=@captcha.png" \
   -F "psm=7" -F "preprocess=true"
 ```
+
+### hCaptcha بلا أي خدمة مدفوعة (البروتوكول العام مباشرة)
+
+```bash
+# 1) هل تصل شبكتك إلى hCaptcha؟ وهل OCR جاهز؟
+curl "http://localhost:8000/hcaptcha/probe"
+curl "http://localhost:8000/ocr/engines"
+
+# 2) حلّ فعلي عبر /checksiteconfig → /getcaptcha → OCR → /checkcaptcha
+curl -X POST http://localhost:8000/hcaptcha/live \
+  -H 'content-type: application/json' \
+  -d '{"sitekey":"10000000-ffff-ffff-ffff-000000000001","url":"https://accounts.hcaptcha.com/demo"}'
+```
+
+```bash
+python examples/hcaptcha_live_demo.py          # إثبات كامل بلا إنترنت
+python examples/hcaptcha_live_demo.py --real    # محاولة على hCaptcha الحقيقية
+```
+
+كل التفاصيل، سبب الحجب الشبكي في بيئات السحابة، وكيفية تمرير وكيل:
+[`docs/HCAPTCHA_FREE.md`](docs/HCAPTCHA_FREE.md).
 
 ### مثال استدعاء hCaptcha
 ```bash

@@ -71,6 +71,8 @@ from solver_engine import (
     configure_hcaptcha_external,
     get_hcaptcha_service_stats,
     get_capabilities,
+    probe_hcaptcha,
+    engines_status,
     evaluate_expression,
     normalize_expression,
 )
@@ -2124,6 +2126,74 @@ async def bulk_status(
     bulk["failed"] = failed
     bulk["jobs"] = job_statuses
     return bulk
+
+
+# --------- hCaptcha: فحص الوصول والحل المباشر ----------
+
+class HCaptchaLiveRequest(BaseModel):
+    sitekey: str = Field(..., description="مفتاح موقع hCaptcha")
+    url: str = Field(..., description="صفحة الموقع التي تحتوي الكبتشا")
+    host: Optional[str] = Field(None, description="المضيف، افتراضيًا من url")
+    max_rounds: int = Field(2, ge=1, le=5)
+
+
+@app.get("/hcaptcha/probe", tags=["solving"])
+@limiter.limit("30/minute")
+async def hcaptcha_probe(
+    request: Request,
+    sitekey: str = Query("10000000-ffff-ffff-ffff-000000000001"),
+    url: str = Query("https://accounts.hcaptcha.com/demo"),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    """يفحص إن كانت هذه الشبكة تصل إلى hCaptcha، ويعرض محرّكات القراءة المتاحة."""
+    _auth(credentials)
+    return probe_hcaptcha(sitekey=sitekey, url=url)
+
+
+@app.get("/ocr/engines", tags=["system"])
+@limiter.limit("60/minute")
+async def ocr_engines(
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> Dict[str, Any]:
+    """محرّكات قراءة النص المتاحة فعليًا على هذا الجهاز وترتيب الأفضلية."""
+    _auth(credentials)
+    return engines_status()
+
+
+@app.post("/hcaptcha/live", tags=["solving"])
+@limiter.limit("30/minute")
+async def hcaptcha_live_solve(
+    request: Request, req: HCaptchaLiveRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    """يحل hCaptcha مباشرة عبر بروتوكوله العام — بلا أي خدمة مدفوعة.
+
+    يعمل مع التحديات النصية. التحديات متعددة الصور تحتاج نماذج كشف كائنات
+    غير مضمّنة، فيعيد فشلًا صريحًا مع السبب.
+    """
+    _auth(credentials)
+    from solver_engine.hcaptcha_live import HCaptchaLiveSolver
+
+    solver = HCaptchaLiveSolver(max_rounds=req.max_rounds)
+    result = await asyncio.to_thread(
+        solver.solve, sitekey=req.sitekey, url=req.url, host=req.host
+    )
+    db.record_attempt(
+        captcha_type="hcaptcha_live",
+        success=result.success,
+        confidence=result.confidence,
+        response_time_ms=result.response_time_ms,
+        error=result.error,
+    )
+    return {
+        "success": result.success,
+        "token": result.token,
+        "answer": result.text,
+        "confidence": result.confidence,
+        "response_time_ms": result.response_time_ms,
+        "error": result.error,
+        "metadata": result.metadata,
+    }
 
 
 # --------- العقل الذاتي: التقرير، التخطيط، والتأمّل ----------
