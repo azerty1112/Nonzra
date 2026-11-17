@@ -1,5 +1,6 @@
 """سيرفر API متكامل لحل الكبتشا (FastAPI)."""
 
+import asyncio
 import base64
 import json
 import os
@@ -35,6 +36,7 @@ from intelligence import (
     Mind,
 )
 
+from api_server.policy import POLICY
 from api_server.auth import (
     api_key_store,
     hash_api_key,
@@ -150,7 +152,8 @@ API_VERSION = "0.7.0"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = PROJECT_ROOT / "web"
 
-limiter = Limiter(key_func=get_remote_address)
+# في الوضع غير المحدود: المُحدِّد معطّل تمامًا (لا 429 على الإطلاق)
+limiter = Limiter(key_func=get_remote_address, enabled=not POLICY.unlimited)
 
 security = HTTPBearer(auto_error=False)
 db = Database()
@@ -183,20 +186,38 @@ orchestrator = AutoOrchestrator(
     experience=experience_engine,
     mind=mind,
 )
-worker = AutoWorker(orchestrator=orchestrator, concurrency=2)
+worker = AutoWorker(
+    orchestrator=orchestrator,
+    concurrency=POLICY.concurrency,
+    max_concurrency=POLICY.max_concurrency,
+)
 
 # --------- التحسين الذاتي ----------
 training_dataset = CaptchaDataset()
 self_improver = SelfImprover(dataset=training_dataset)
 
 
+async def _memory_sweeper() -> None:
+    """ينظّف الذاكرة دوريًا (مهام منتهية، متتبّعات معدل) في الخلفية."""
+    while True:
+        try:
+            await asyncio.sleep(60)
+            _sweep_memory()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            continue
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    sweep_task = asyncio.create_task(_memory_sweeper())
     await worker.start()
     await scheduled_job_manager.start_scheduler(orchestrator)
     try:
         yield
     finally:
+        sweep_task.cancel()
         try:
             mind.save()
         except Exception:  # noqa: BLE001
@@ -286,8 +307,8 @@ if _STATIC_DIR.is_dir():
 
 _IP_BLOCK_LIST: Dict[str, float] = {}
 _REQUEST_TIMESTAMPS: Dict[str, List[float]] = {}
-MAX_REQUESTS_PER_MINUTE = 120
-BLOCK_DURATION_SECONDS = 300  # 5 دقائق
+MAX_REQUESTS_PER_MINUTE = POLICY.per_ip_per_minute
+BLOCK_DURATION_SECONDS = POLICY.ip_block_seconds
 
 
 def _get_client_ip(request: Request) -> str:
@@ -310,32 +331,79 @@ def _block_ip(ip: str) -> None:
 
 
 def _check_rate_limit(ip: str) -> bool:
+    if MAX_REQUESTS_PER_MINUTE <= 0:
+        return True  # الوضع غير المحدود
     now = time.time()
     timestamps = _REQUEST_TIMESTAMPS.get(ip, [])
     # احتفظ فقط بطلبات الدقيقة الأخيرة
     timestamps = [t for t in timestamps if now - t < 60.0]
     if len(timestamps) >= MAX_REQUESTS_PER_MINUTE:
-        _block_ip(ip)
+        if BLOCK_DURATION_SECONDS > 0:
+            _block_ip(ip)
         return False
     timestamps.append(now)
     _REQUEST_TIMESTAMPS[ip] = timestamps
     return True
 
 
+def _sweep_memory() -> None:
+    """ينظّف المهام القديمة ومتتبّعات المعدل حتى لا تتضخّم الذاكرة على خادم دائم."""
+    now = time.time()
+    # حذف المهام المنتهية
+    for job_id, job in list(JOBS.items()):
+        finished = job.get("finished_at")
+        if not finished:
+            continue
+        try:
+            from datetime import datetime as _dt
+
+            ts = _dt.fromisoformat(finished).timestamp()
+        except Exception:  # noqa: BLE001
+            ts = now
+        if now - ts > POLICY.job_ttl_seconds:
+            JOBS.pop(job_id, None)
+            JOB_PROGRESS.pop(job_id, None)
+            JOB_SUBSCRIBERS.pop(job_id, None)
+    # سقف صلب للمهام المحفوظة (الأقدم أولًا)
+    if len(JOBS) > POLICY.max_jobs_retained:
+        oldest = sorted(
+            JOBS.items(),
+            key=lambda item: item[1].get("created_at") or "",
+        )
+        for job_id, _ in oldest[: len(JOBS) - POLICY.max_jobs_retained]:
+            JOBS.pop(job_id, None)
+            JOB_PROGRESS.pop(job_id, None)
+            JOB_SUBSCRIBERS.pop(job_id, None)
+    # تنظيف متتبّع معدل الطلبات لعناوين خاملة
+    for ip, stamps in list(_REQUEST_TIMESTAMPS.items()):
+        recent = [t for t in stamps if now - t < 60.0]
+        if recent:
+            _REQUEST_TIMESTAMPS[ip] = recent
+        else:
+            _REQUEST_TIMESTAMPS.pop(ip, None)
+    for ip, blocked_at in list(_IP_BLOCK_LIST.items()):
+        if now - blocked_at > max(1, BLOCK_DURATION_SECONDS):
+            _IP_BLOCK_LIST.pop(ip, None)
+
+
 @app.middleware("http")
 async def security_middleware(request: Request, call_next: Any) -> Any:
-    ip = _get_client_ip(request)
-    if _is_ip_blocked(ip):
-        return JSONResponse(
-            status_code=429,
-            content={"error": "تم حظر عنوان IP الخاص بك مؤقتًا بسبب عدد الطلبات الكبير"},
-        )
-    if not _check_rate_limit(ip):
-        return JSONResponse(
-            status_code=429,
-            content={"error": "تم تجاوز الحد المسموح للطلبات في الدقيقة"},
-        )
+    # الوضع غير المحدود: لا حظر ولا عدّ إطلاقًا (أقل حملًا وأسرع)
+    if not POLICY.unlimited:
+        ip = _get_client_ip(request)
+        if _is_ip_blocked(ip):
+            return JSONResponse(
+                status_code=429,
+                content={"error": "تم حظر عنوان IP الخاص بك مؤقتًا بسبب عدد الطلبات الكبير"},
+            )
+        if not _check_rate_limit(ip):
+            return JSONResponse(
+                status_code=429,
+                content={"error": "تم تجاوز الحد المسموح للطلبات في الدقيقة"},
+            )
     response = await call_next(request)
+    if not POLICY.unlimited:
+        response.headers["X-RateLimit-Limit"] = str(MAX_REQUESTS_PER_MINUTE)
     return response
 
 
@@ -347,9 +415,12 @@ async def web_dashboard() -> Any:
     return FileResponse(str(dashboard_path))
 
 
-@app.get("/", include_in_schema=False)
-async def root_redirect() -> Any:
-    """تحويل الجذر إلى لوحة التحكم مباشرة."""
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+async def landing_page() -> Any:
+    """الصفحة العامة: تعريف بالخادم، حالة التشغيل، وحلّ صورة مباشرة."""
+    path = WEB_DIR / "templates" / "landing.html"
+    if path.is_file():
+        return FileResponse(str(path))
     from fastapi.responses import RedirectResponse
 
     return RedirectResponse(url="/dashboard")
@@ -2001,6 +2072,11 @@ async def bulk_auto(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> BulkSubmitResponse:
     _auth(credentials)
+    if len(req.items) > POLICY.max_batch_items:
+        raise HTTPException(
+            status_code=413,
+            detail=f"الحد الأقصى {POLICY.max_batch_items} عنصرًا في الطلب الجماعي",
+        )
     bulk_id = str(uuid.uuid4())
     job_ids: list = []
     for item in req.items:
@@ -2354,7 +2430,7 @@ class BatchSolveItem(BaseModel):
 
 
 class BatchSolveRequest(BaseModel):
-    items: List[BatchSolveItem] = Field(..., min_length=1, max_length=50)
+    items: List[BatchSolveItem] = Field(..., min_length=1, max_length=200)
     captcha_type: Optional[str] = Field(None, description="نوع افتراضي لكل العناصر")
     preprocess: bool = True
 
@@ -2365,8 +2441,13 @@ async def batch_solve(
     request: Request, req: BatchSolveRequest,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Dict[str, Any]:
-    """يحل حتى 50 كبتشا في طلب واحد (متزامن، مناسب للصور الصغيرة)."""
+    """يحل حتى 200 كبتشا في طلب واحد (متزامن، مناسب للصور الصغيرة)."""
     _auth(credentials)
+    if len(req.items) > POLICY.max_batch_items:
+        raise HTTPException(
+            status_code=413,
+            detail=f"الحد الأقصى {POLICY.max_batch_items} عنصرًا لكل طلب",
+        )
     import asyncio
 
     async def _one(index: int, item: BatchSolveItem) -> Dict[str, Any]:
@@ -2620,6 +2701,34 @@ async def dashboard() -> HTMLResponse:
     return HTMLResponse(content=DASHBOARD_HTML)
 
 
+@app.get("/status", tags=["system"])
+async def service_status() -> Dict[str, Any]:
+    """ملخّص الملاءمة التشغيلية: الوضع، الحدود، الحمل الحالي، وقدرات الحل."""
+    caps = get_capabilities()
+    snapshot = worker.snapshot()
+    return {
+        "service": "nonecap-clone",
+        "version": API_VERSION,
+        "mode": "unlimited" if POLICY.unlimited else "guarded",
+        "free": True,
+        "policy": POLICY.to_dict(),
+        "requires_api_key": POLICY.require_api_key,
+        "supported_types": caps["supported_types"],
+        "solvers": caps["total_solvers"],
+        "load": {
+            "worker_running": bool(snapshot.get("running")),
+            "concurrency": snapshot.get("concurrency"),
+            "queued": snapshot.get("queued", 0),
+            "processed": snapshot.get("processed", 0),
+        },
+        "storage": {
+            "jobs_in_memory": len(JOBS),
+            "job_ttl_seconds": POLICY.job_ttl_seconds,
+            "max_jobs": POLICY.max_jobs_retained,
+        },
+    }
+
+
 @app.get("/health", tags=["system"])
 async def health() -> Dict[str, Any]:
     """فحص صحة شامل: حالة السيرفر، قاعدة البيانات، والعامل الخلفي."""
@@ -2675,7 +2784,9 @@ def _auth(
 ) -> Optional[Dict[str, Any]]:
     api_key = extract_api_key(credentials, x_api_key, api_key_query)
     if not api_key:
-        return None  # التجريب محلياً دون مفتاح
+        if POLICY.require_api_key:
+            raise HTTPException(status_code=401, detail="مفتاح API مطلوب")
+        return None  # وضع مفتوح: بلا مفتاح
     # أولاً تحقق من المفتاح في قاعدة البيانات الآمنة (مشفّر)
     key_info = secure_db.verify_api_key(api_key)
     if key_info:
@@ -2684,7 +2795,7 @@ def _auth(
     info = api_key_store.validate(api_key)
     if not info:
         raise HTTPException(status_code=401, detail="مفتاح API غير صالح")
-    if api_key_store.is_rate_limited(info["key_id"]):
+    if not POLICY.unlimited and api_key_store.is_rate_limited(info["key_id"]):
         raise HTTPException(status_code=429, detail="تم تجاوز الحد المسموح للمفتاح")
     api_key_store.record_usage(info["key_id"])
     return info

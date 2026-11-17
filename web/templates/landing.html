@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nonzra — خادم حل الكبتشا المجاني بلا حدود</title>
+<link rel="icon" type="image/svg+xml" href="/static/img/favicon.svg">
+<meta name="description" content="Nonzra: خادم حل كبتشا مفتوح المصدر، مجاني بالكامل، بلا حدود وبلا مفاتيح إلزامية. جاهز للتشغيل بأمر واحد.">
+<meta property="og:title" content="Nonzra — خادم حل الكبتشا المجاني بلا حدود">
+<meta property="og:description" content="مجاني بالكامل · بلا حدود طلبات · بلا مفتاح إلزامي · يعمل ذاتيًا على جهازك">
+<meta property="og:image" content="/static/img/architecture.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #070d1a; --bg2: #0b1220; --card: rgba(17,28,51,.72); --border: #1e293b;
+    --accent: #38bdf8; --cyan: #22d3ee; --violet: #a78bfa; --amber: #fbbf24;
+    --text: #f1f5f9; --muted: #94a3b8; --dim: #64748b; --ok: #34d399;
+  }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: 'Cairo', system-ui, sans-serif; color: var(--text); background: var(--bg);
+    line-height: 1.7; overflow-x: hidden;
+  }
+  .glow { position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background:
+      radial-gradient(680px 420px at 82% -8%, rgba(56,189,248,.20), transparent 65%),
+      radial-gradient(620px 420px at 6% 42%, rgba(167,139,250,.15), transparent 66%),
+      radial-gradient(700px 480px at 52% 108%, rgba(34,211,238,.10), transparent 70%);
+  }
+  .grid-bg { position: fixed; inset: 0; pointer-events: none; z-index: 0; opacity: .35;
+    background-image: linear-gradient(rgba(30,41,59,.55) 1px, transparent 1px),
+                      linear-gradient(90deg, rgba(30,41,59,.55) 1px, transparent 1px);
+    background-size: 64px 64px; mask-image: radial-gradient(circle at 50% 22%, #000 0%, transparent 78%); }
+  .wrap { position: relative; z-index: 1; max-width: 1180px; margin: 0 auto; padding: 0 24px; }
+
+  header { position: sticky; top: 0; z-index: 50; backdrop-filter: blur(14px);
+    background: rgba(7,13,26,.78); border-bottom: 1px solid var(--border); }
+  .nav { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 14px 0; }
+  .brand { display: flex; align-items: center; gap: 12px; font-weight: 800; font-size: 1.28rem; }
+  .brand img { width: 38px; height: 38px; border-radius: 10px; box-shadow: 0 0 0 1px var(--border); }
+  .brand small { display: block; font-size: .72rem; font-weight: 400; color: var(--dim); letter-spacing: .4px; }
+  .nav-links { display: flex; gap: 22px; align-items: center; font-size: .92rem; }
+  .nav-links a { color: var(--muted); text-decoration: none; transition: color .2s; }
+  .nav-links a:hover { color: var(--accent); }
+  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 18px; border-radius: 10px;
+    font-weight: 700; font-size: .92rem; text-decoration: none; border: 1px solid var(--border);
+    background: #16233d; color: var(--text); cursor: pointer; transition: all .18s; font-family: inherit; }
+  .btn:hover { transform: translateY(-1px); border-color: var(--accent); }
+  .btn-primary { background: linear-gradient(100deg, var(--accent), var(--cyan)); color: #04121f;
+    border: none; box-shadow: 0 12px 30px -12px rgba(56,189,248,.75); }
+  .btn-violet { background: linear-gradient(100deg, var(--violet), #818cf8); color: #0b1020; border: none; }
+  .btn-sm { padding: 8px 14px; font-size: .85rem; }
+
+  .hero { padding: 76px 0 44px; text-align: center; }
+  .pill { display: inline-flex; align-items: center; gap: 9px; padding: 7px 16px; border-radius: 999px;
+    border: 1px solid rgba(52,211,153,.35); background: rgba(52,211,153,.10); color: #6ee7b7;
+    font-size: .85rem; font-weight: 600; margin-bottom: 22px; }
+  .pill i { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 10px var(--ok);
+    display: inline-block; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+  h1 { font-size: clamp(2.1rem, 5vw, 3.5rem); font-weight: 800; line-height: 1.25; letter-spacing: -.5px; }
+  h1 span { background: linear-gradient(95deg, var(--accent), var(--cyan) 45%, var(--violet));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .lede { max-width: 780px; margin: 20px auto 0; font-size: 1.1rem; color: var(--muted); }
+  .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 30px; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px,1fr)); gap: 14px;
+    margin: 46px 0 10px; }
+  .kpi { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 18px;
+    backdrop-filter: blur(8px); }
+  .kpi b { display: block; font-size: 1.85rem; font-family: 'JetBrains Mono', monospace; color: var(--accent); }
+  .kpi span { font-size: .82rem; color: var(--muted); }
+
+  section { padding: 56px 0; }
+  .sec-head { text-align: center; margin-bottom: 34px; }
+  .sec-head h2 { font-size: clamp(1.5rem, 3vw, 2.1rem); font-weight: 800; }
+  .sec-head p { color: var(--muted); margin-top: 8px; font-size: .98rem; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(268px,1fr)); gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 22px;
+    backdrop-filter: blur(8px); transition: transform .2s, border-color .2s; }
+  .card:hover { transform: translateY(-3px); border-color: rgba(56,189,248,.45); }
+  .card .ico { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center;
+    font-size: 1.3rem; margin-bottom: 14px; background: rgba(56,189,248,.12);
+    border: 1px solid rgba(56,189,248,.3); }
+  .card h3 { font-size: 1.06rem; margin-bottom: 8px; }
+  .card p { font-size: .9rem; color: var(--muted); }
+  .card ul { margin: 10px 0 0; padding-inline-start: 18px; font-size: .85rem; color: #cbd5e1; }
+
+  .demo { display: grid; grid-template-columns: 1.05fr .95fr; gap: 20px; align-items: start; }
+  .panel { background: var(--card); border: 1px solid var(--border); border-radius: 18px; padding: 22px;
+    backdrop-filter: blur(8px); }
+  .panel h3 { font-size: 1rem; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
+  .drop { border: 2px dashed #24344f; border-radius: 14px; padding: 26px; text-align: center;
+    color: var(--muted); cursor: pointer; transition: all .2s; font-size: .9rem; }
+  .drop:hover, .drop.over { border-color: var(--accent); color: var(--accent); background: rgba(56,189,248,.06); }
+  .drop img { max-height: 130px; max-width: 100%; margin-top: 12px; border-radius: 8px; display: none; }
+  select, input[type=text] { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border);
+    background: #0c1628; color: var(--text); font-family: inherit; font-size: .9rem; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 12px 0; }
+  .out { margin-top: 14px; font-family: 'JetBrains Mono', monospace; font-size: .82rem; color: var(--muted);
+    background: #060b16; border: 1px solid var(--border); border-radius: 10px; padding: 12px;
+    min-height: 92px; white-space: pre-wrap; word-break: break-all; }
+  .answer { font-size: 1.5rem; color: var(--cyan); letter-spacing: 3px; font-weight: 700; }
+  pre { background: #060b16; border: 1px solid var(--border); border-radius: 12px; padding: 16px;
+    overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: .82rem; color: #cbd5e1;
+    direction: ltr; text-align: left; line-height: 1.75; }
+  pre .c { color: #475569; } pre .k { color: #7dd3fc; } pre .s { color: #86efac; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  .tab { padding: 7px 14px; border-radius: 9px; font-size: .84rem; cursor: pointer; border: 1px solid var(--border);
+    background: #101c33; color: var(--muted); font-family: inherit; }
+  .tab.active { background: rgba(56,189,248,.16); border-color: rgba(56,189,248,.5); color: var(--accent); }
+
+  table { width: 100%; border-collapse: collapse; font-size: .86rem; }
+  th, td { padding: 11px 12px; text-align: right; border-bottom: 1px solid var(--border); }
+  th { color: var(--dim); font-size: .78rem; text-transform: uppercase; letter-spacing: .4px; }
+  code { font-family: 'JetBrains Mono', monospace; color: #7dd3fc; font-size: .84em; }
+  .free-tag { color: var(--ok); font-weight: 700; }
+
+  .mind-strip { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 18px; }
+  .chip { font-size: .82rem; padding: 7px 14px; border-radius: 999px; color: #7dd3fc;
+    background: rgba(56,189,248,.1); border: 1px solid rgba(56,189,248,.3); }
+  footer { border-top: 1px solid var(--border); padding: 30px 0; color: var(--dim); font-size: .85rem; }
+  .foot { display: flex; justify-content: space-between; gap: 18px; flex-wrap: wrap; align-items: center; }
+  @media (max-width: 900px) { .demo { grid-template-columns: 1fr; } .nav-links { display: none; } }
+</style>
+</head>
+<body>
+<div class="glow"></div>
+<div class="grid-bg"></div>
+
+<header>
+  <div class="wrap">
+    <div class="nav">
+      <div class="brand">
+        <img src="/static/img/logo-mark.svg" alt="Nonzra">
+        <div>Nonzra<small>CAPTCHA SERVER · FREE FOREVER</small></div>
+      </div>
+      <nav class="nav-links">
+        <a href="#features">المزايا</a>
+        <a href="#demo">جرّب الآن</a>
+        <a href="#api">واجهة API</a>
+        <a href="#deploy">التشغيل</a>
+        <a href="/docs" target="_blank" rel="noopener">التوثيق</a>
+      </nav>
+      <a class="btn btn-primary btn-sm" href="/dashboard">لوحة التحكم</a>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="hero">
+    <div class="pill"><i></i> مجاني 100% · بلا حدود طلبات · بلا مفتاح إلزامي</div>
+    <h1>خادم حل كبتشا <span>كامل ومجاني</span><br>يعمل على جهازك وبذكائه الخاص</h1>
+    <p class="lede">
+      بديل مفتوح المصدر ومُستضاف ذاتيًا لخدمات كبتشا المدفوعة: عشرات الأنواع، عقل يتعلّم من نتائجه،
+      ولا اشتراك ولا حصة ولا «خطة مجانية محدودة». شغّله بأمر واحد واستخدمه كما تشاء.
+    </p>
+    <div class="cta">
+      <a class="btn btn-primary" href="#deploy">شغّله الآن</a>
+      <a class="btn" href="/docs" target="_blank" rel="noopener">واجهة API</a>
+      <a class="btn btn-violet" href="/dashboard">افتح لوحة التحكم</a>
+    </div>
+
+    <div class="kpis">
+      <div class="kpi"><b id="kpiMode">—</b><span>وضع التشغيل</span></div>
+      <div class="kpi"><b id="kpiTypes">—</b><span>نوع كبتشا مدعوم</span></div>
+      <div class="kpi"><b id="kpiLimit">∞</b><span>حد الطلبات في الدقيقة</span></div>
+      <div class="kpi"><b id="kpiKey">0</b><span>مفاتيح مطلوبة</span></div>
+    </div>
+    <div class="mind-strip">
+      <span class="chip">معايرة ثقة</span>
+      <span class="chip">كفاءة لكل نوع</span>
+      <span class="chip">تعلّم دائم على القرص</span>
+      <span class="chip">SLA: بلا حصص</span>
+      <span class="chip">MIT</span>
+    </div>
+  </section>
+
+  <section id="features">
+    <div class="sec-head">
+      <h2>لماذا هذا الخادم «كامل» وليس نسخة تجريبية؟</h2>
+      <p>كل ما تجده في خدمات الكبتشا المدفوعة متاح هنا محليًا، وبلا سقف استخدام.</p>
+    </div>
+    <div class="cards">
+      <div class="card">
+        <div class="ico">∞</div>
+        <h3>بلا حدود</h3>
+        <p>لا حصة شهرية ولا 429 على الاستخدام العادي. الحماية من الطفح اختيارية عبر متغير بيئة واحد.</p>
+        <ul><li>حد IP افتراضي: 0 (معطّل)</li><li>حد المفاتيح: 0 (معطّل)</li><li>حظر تلقائي: معطّل</li></ul>
+      </div>
+      <div class="card">
+        <div class="ico">🔑</div>
+        <h3>بلا مفاتيح إلزامية</h3>
+        <p>يعمل فورًا بلا تسجيل. مفاتيح API متاحة لمن يريد تتبّع الاستخدام فقط.</p>
+        <ul><li>وضع مفتوح افتراضيًا</li><li>مفاتيح اختيارية للتحكم</li><li>تشفير مفاتيح على القرص</li></ul>
+      </div>
+      <div class="card">
+        <div class="ico">🧠</div>
+        <h3>عقل ذاتي</h3>
+        <p>يتعلّم من كل نتيجة: معايرة ثقة، كفاءة لكل نوع، ومخطّط قرار بالقيمة المتوقعة.</p>
+        <ul><li>يشرح سبب اختيار المسار</li><li>يحفظ تعلّمه بعد إعادة التشغيل</li><li>يقترح تجربته القادمة بنفسه</li></ul>
+      </div>
+      <div class="card">
+        <div class="ico">🧩</div>
+        <h3>عشرة أنواع</h3>
+        <p>صور، نصوص، أرقام، رياضيات، سلايدر، تدوير، سحب، نقاط، hCaptcha، reCAPTCHA، Turnstile.</p>
+        <ul><li>محرّكات محلية بلا إنترنت</li><li>سلسلة خدمات خارجية اختيارية</li><li>مولّد بيانات تدريب</li></ul>
+      </div>
+      <div class="card">
+        <div class="ico">⚡</div>
+        <h3>جاهز للإنتاج</h3>
+        <p>Docker، مقاييس Prometheus، فحص صحة، نسخ احتياطي، وجدولة مهام — كلها مدمجة.</p>
+        <ul><li>عامل خلفي يتوسّع تلقائيًا</li><li>WebSocket للتقدّم المباشر</li><li>ويب هوكس للنتائج</li></ul>
+      </div>
+      <div class="card">
+        <div class="ico">🛡️</div>
+        <h3>خصوصية كاملة</h3>
+        <p>الصور تُعالج على جهازك. لا إرسال لأي طرف ثالث ما لم تُفعّل خدمة خارجية بنفسك.</p>
+        <ul><li>لا تتبّع ولا إعلانات</li><li>SQLite محلي</li><li>MIT — بلا قيود ترخيص</li></ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="demo">
+    <div class="sec-head">
+      <h2>جرّب الآن — بلا مفتاح وبلا تسجيل</h2>
+      <p>ارفع صورة كبتشا وسيحلّها الخادم أمامك، ويخبرك بثقته المعايَرة.</p>
+    </div>
+    <div class="demo">
+      <div class="panel">
+        <h3>حل سريع</h3>
+        <label class="drop" id="drop" for="file">
+          اسحب صورة هنا أو اضغط للاختيار
+          <img id="preview" alt="">
+        </label>
+        <input type="file" id="file" accept="image/*" hidden>
+        <div class="row">
+          <select id="type">
+            <option value="">كشف تلقائي</option>
+          </select>
+          <a class="btn btn-primary" id="solveBtn" href="javascript:void(0)">حل الصورة</a>
+        </div>
+        <div class="out" id="out">النتيجة ستظهر هنا…</div>
+      </div>
+      <div class="panel">
+        <h3>مثال عبر cURL</h3>
+        <pre><span class="c"># بلا مفتاح، بلا حدود</span>
+curl -X POST <span class="s">https://YOUR-HOST/auto</span> \
+  -F <span class="k">"file=@captcha.png"</span>
+
+<span class="c"># الرد يحتوي قرار العقل وثقته المعايَرة</span>
+{
+  <span class="k">"result"</span>: { <span class="k">"success"</span>: true,
+              <span class="k">"text"</span>: <span class="s">"AB12"</span>,
+              <span class="k">"confidence"</span>: 0.91 },
+  <span class="k">"mind"</span>: { <span class="k">"chosen"</span>: <span class="s">"local_primary"</span>,
+            <span class="k">"calibrated_confidence"</span>: 0.88 }
+}</pre>
+        <div style="margin-top:14px;font-size:.86rem;color:var(--muted)" id="mindHint"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="api">
+    <div class="sec-head">
+      <h2>واجهة API كاملة</h2>
+      <p>نفس النقاط بلا حصص: حل، دفعات، تحليل، تدريب، وعقل.</p>
+    </div>
+    <div class="panel">
+      <table>
+        <thead><tr><th>الطريقة</th><th>المسار</th><th>الوظيفة</th><th>حد</th></tr></thead>
+        <tbody>
+          <tr><td>POST</td><td><code>/auto</code></td><td>حل ذاتي كامل مع كشف النوع</td><td class="free-tag">∞</td></tr>
+          <tr><td>POST</td><td><code>/solve/{type}</code></td><td>حل مباشر بأي نوع</td><td class="free-tag">∞</td></tr>
+          <tr><td>POST</td><td><code>/batch/solve</code></td><td>حتى 200 صورة في طلب</td><td class="free-tag">∞</td></tr>
+          <tr><td>POST</td><td><code>/bulk/auto</code></td><td>دفعة عبر العامل الخلفي</td><td class="free-tag">∞</td></tr>
+          <tr><td>POST</td><td><code>/analysis/image</code></td><td>تحليل صعوبة قبل الحل</td><td class="free-tag">∞</td></tr>
+          <tr><td>GET</td><td><code>/status</code></td><td>وضع التشغيل والحدود والحمل</td><td class="free-tag">∞</td></tr>
+          <tr><td>GET</td><td><code>/mind</code></td><td>حالة العقل وتعلّمه</td><td class="free-tag">∞</td></tr>
+          <tr><td>GET</td><td><code>/metrics</code></td><td>مقاييس Prometheus</td><td class="free-tag">∞</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="deploy">
+    <div class="sec-head">
+      <h2>شغّله في دقيقة</h2>
+      <p>ثلاث طرق، كلها مجانية: Docker، أو Python مباشرة، أو نشر سحابي بضغطة.</p>
+    </div>
+    <div class="tabs">
+      <button class="tab active" data-tab="docker">Docker</button>
+      <button class="tab" data-tab="python">Python</button>
+      <button class="tab" data-tab="cloud">نشر سحابي</button>
+    </div>
+    <div class="panel">
+      <pre id="tab-docker"><span class="c"># سحب وتشغيل (بلا مفاتيح، بلا حدود)</span>
+docker run -d --name nonecap -p 8000:8000 \
+  nonecap/clone:latest
+
+<span class="c"># أو من المستودع</span>
+git clone https://github.com/azerty1112/Nonzra &amp;&amp; cd Nonzra
+docker compose up -d
+
+<span class="c"># افتح</span>
+http://localhost:8000          <span class="c"># الصفحة العامة</span>
+http://localhost:8000/dashboard <span class="c"># لوحة التحكم</span></pre>
+      <pre id="tab-python" style="display:none"><span class="c"># تثبيت مرة واحدة (install once)</span>
+python3 -m venv .venv &amp;&amp; source .venv/bin/activate
+pip install -r api_server/requirements.txt
+
+<span class="c"># تشغيل الخادم</span>
+bash run.sh            <span class="c"># أو: uvicorn api_server.main:app --host 0.0.0.0 --port 8000</span>
+
+<span class="c"># اختبار</span>
+curl http://localhost:8000/status</pre>
+      <pre id="tab-cloud" style="display:none"><span class="c"># Fly.io (مجاني للاستخدام الصغير)</span>
+fly launch --now        <span class="c"># يستخدم fly.toml المرفق</span>
+
+<span class="c"># Render / Railway</span>
+<span class="c"># اربط المستودع، ثم:</span>
+<span class="c"># Build:  pip install -r api_server/requirements.txt</span>
+<span class="c"># Start:  uvicorn api_server.main:app --host 0.0.0.0 --port $PORT</span>
+
+<span class="c"># VPS + HTTPS تلقائي</span>
+docker compose -f docker-compose.yml up -d
+<span class="c"># ثم Caddyfile المرفق يعطيك شهادة تلقائية</span></pre>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <div>Nonzra · خادم كبتشا مفتوح المصدر · MIT</div>
+    <div><a href="/docs" style="color:var(--dim)">API</a> · <a href="/dashboard" style="color:var(--dim)">لوحة التحكم</a> · <a href="/mind" style="color:var(--dim)">العقل</a></div>
+  </div>
+</footer>
+
+<script>
+const $ = id => document.getElementById(id);
+
+function escapeHtml(s) {
+  const d = document.createElement("div");
+  d.textContent = s == null ? "" : String(s);
+  return d.innerHTML;
+}
+
+async function loadStatus() {
+  try {
+    const r = await fetch("/status");
+    const d = await r.json();
+    $("kpiMode").textContent = d.mode === "unlimited" ? "بلا حدود" : "محمي";
+    $("kpiMode").style.color = d.mode === "unlimited" ? "var(--ok)" : "var(--amber)";
+    $("kpiTypes").textContent = (d.supported_types || []).length;
+    const perMin = d.policy ? d.policy.per_ip_per_minute : 0;
+    $("kpiLimit").textContent = perMin === 0 ? "∞" : perMin;
+    $("kpiKey").textContent = d.requires_api_key ? "1" : "0";
+    const sel = $("type");
+    if (sel && sel.options.length <= 1) {
+      (d.supported_types || []).forEach(t => {
+        const o = document.createElement("option");
+        o.value = t; o.textContent = t; sel.appendChild(o);
+      });
+    }
+  } catch (e) {
+    $("kpiMode").textContent = "غير متصل";
+  }
+}
+
+async function loadMind() {
+  try {
+    const r = await fetch("/mind");
+    const d = await r.json();
+    const rating = Math.round((d.self_rating || 0) * 100);
+    $("mindHint").innerHTML =
+      `ثقة الخادم في نفسه: <strong style="color:var(--accent)">${rating}%</strong> · ${escapeHtml(d.mood || "")}` +
+      (d.next_experiment ? `<br>تجربته القادمة: <code>${escapeHtml(d.next_experiment.target_type)}</code>` : "");
+  } catch (e) { /* تجاهل */ }
+}
+
+const drop = $("drop"), fileInput = $("file"), preview = $("preview");
+drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", e => {
+  e.preventDefault(); drop.classList.remove("over");
+  if (e.dataTransfer.files.length) { fileInput.files = e.dataTransfer.files; showPreview(); }
+});
+fileInput.addEventListener("change", showPreview);
+
+function showPreview() {
+  const f = fileInput.files && fileInput.files[0];
+  if (!f) return;
+  preview.src = URL.createObjectURL(f);
+  preview.style.display = "block";
+}
+
+$("solveBtn").addEventListener("click", async () => {
+  const f = fileInput.files && fileInput.files[0];
+  const out = $("out");
+  if (!f) { out.textContent = "اختر صورة أولًا."; return; }
+  const fd = new FormData();
+  fd.append("file", f);
+  const t = $("type").value;
+  if (t) fd.append("captcha_type", t);
+  out.innerHTML = '<span style="color:var(--accent)">جاري الحل…</span>';
+  const started = performance.now();
+  try {
+    const r = await fetch("/auto", { method: "POST", body: fd });
+    const d = await r.json();
+    const ms = Math.round(performance.now() - started);
+    if (d.detail) { out.textContent = "خطأ: " + (typeof d.detail === "string" ? d.detail : JSON.stringify(d.detail)); return; }
+    const res = d.result || {};
+    const cal = d.mind && d.mind.calibrated_confidence;
+    out.innerHTML =
+      `<div class="answer">${escapeHtml(res.text || res.token || "—")}</div>` +
+      `<div style="margin-top:6px">${res.success ? "✅ نجح" : "❌ فشل"} · ثقة ${Math.round((res.confidence || 0) * 100)}%` +
+      (cal !== undefined && cal !== null ? ` · معايَرة ${Math.round(cal * 100)}%` : "") +
+      ` · ${ms}ms</div>` +
+      `<div style="margin-top:4px;color:#64748b">النوع: ${escapeHtml(d.detected_type || "-")} · المسار: ${escapeHtml((d.mind && d.mind.decision && d.mind.decision.chosen) || d.strategy_used || "-")}</div>`;
+  } catch (e) {
+    out.textContent = "تعذّر الحل: " + e.message;
+  }
+});
+
+document.querySelectorAll(".tab").forEach(tab => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+    tab.classList.add("active");
+    ["docker", "python", "cloud"].forEach(k => {
+      $("tab-" + k).style.display = (k === tab.dataset.tab) ? "block" : "none";
+    });
+  });
+});
+
+loadStatus();
+loadMind();
+setInterval(loadStatus, 30000);
+</script>
+</body>
+</html>

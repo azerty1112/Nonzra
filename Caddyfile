@@ -1,0 +1,28 @@
+# HTTPS تلقائي عبر Caddy (شهادة Let's Encrypt) — بديل مجاني لـ NGINX+Certbot
+# الاستخدام: بدّل example.com بنطاقك، ثم:
+#   caddy run --config Caddyfile
+example.com {
+	encode zstd gzip
+
+	# رؤوس أمان أساسية
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	# كبتشا: مهلة أطول وحد أعلى لحجم الجسم
+	request_body {
+		max_size 25MB
+	}
+
+	reverse_proxy 127.0.0.1:8000 {
+		flush_interval -1
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	log {
+		output file /var/log/caddy/nonzra.log
+		format console
+	}
+}

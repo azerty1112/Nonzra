@@ -7,6 +7,10 @@ services:
       - "8000:8000"
     environment:
       - LOG_LEVEL=info
+      # مجاني بلا حدود افتراضيًا (يمكن التضييق عبر .env)
+      - NONECAP_UNLIMITED=${NONECAP_UNLIMITED:-1}
+      - NONECAP_CONCURRENCY=${NONECAP_CONCURRENCY:-4}
+      - NONECAP_MAX_CONCURRENCY=${NONECAP_MAX_CONCURRENCY:-16}
       # حدّد مفاتيح CORS صريحة عند الاستخدام من لوحة خارجية: "*" أو قائمة مفصولة بفواصل
       - NONECAP_CORS_ORIGINS=${NONECAP_CORS_ORIGINS:-}
       - NONECAP_ENCRYPTION_KEY=${NONECAP_ENCRYPTION_KEY:-}

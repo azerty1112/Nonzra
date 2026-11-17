@@ -284,3 +284,32 @@ curl -X POST http://localhost:8000/mind/plan \
 | `data/calibration.json` | حاويات المعايرة وعدد المشاهدات وBrier |
 | `data/competence.json` | معاملات Beta لكل نوع + EWMA الزمن |
 | `data/.encryption_key` | مفتاح تشفير مفاتيح API (600) |
+
+## `GET /status`
+ملخّص تشغيلي: الوضع (unlimited/guarded)، الحدود الفعلية، الأصول المدعومة، الحمل، والتخزين.
+
+```json
+{
+  "mode": "unlimited",
+  "free": true,
+  "requires_api_key": false,
+  "policy": {
+    "per_ip_per_minute": 0,
+    "per_key_per_minute": 0,
+    "max_batch_items": 200,
+    "concurrency": 4
+  },
+  "supported_types": ["drag", "hcaptcha", "image", "math", "point", "recaptcha_v2", "rotate", "slider", "text", "turnstile"],
+  "load": { "worker_running": true, "queued": 0, "processed": 0 },
+  "storage": { "jobs_in_memory": 0, "job_ttl_seconds": 3600, "max_jobs": 5000 }
+}
+```
+
+## الوضع غير المحدود
+
+افتراضيًا: `NONECAP_UNLIMITED=1` → لا 429، لا حظر، ولا مفتاح إلزامي.
+للتضييق: `NONECAP_UNLIMITED=0` ثم `NONECAP_RATE_LIMIT_PER_MINUTE=...`،
+`NONECAP_REQUIRE_API_KEY=1`. الجدول الكامل في [FREE_SERVER.md](FREE_SERVER.md).
+
+## `GET /`
+صفحة عامة (HTML) فيها تعريف بالخادم وحل صورة مباشر من المتصفح بلا مفتاح.

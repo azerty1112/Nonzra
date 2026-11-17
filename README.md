@@ -4,6 +4,8 @@
 
 <h1 align="center">Nonzra</h1>
 <p align="center"><strong>عقل ذاتي لحل الكبتشا — يتعلّم من كل محاولة ويشرح قراره</strong></p>
+<p align="center"><strong>خادم كامل · مجاني 100% · بلا حدود طلبات · بلا مفتاح إلزامي</strong></p>
+<p align="center"><code>bash run.sh</code> ثم افتح <code>http://localhost:8000</code></p>
 
 <p align="center">
   <img src="docs/assets/social-preview.png" alt="بطاقة Nonzra" width="820">
@@ -14,6 +16,7 @@
   <img alt="types" src="https://img.shields.io/badge/captcha%20types-10-38bdf8?style=flat-square">
   <img alt="knowledge" src="https://img.shields.io/badge/knowledge%20cards-17-a78bfa?style=flat-square">
   <img alt="python" src="https://img.shields.io/badge/python-3.9%2B-3776ab?style=flat-square">
+  <img alt="free" src="https://img.shields.io/badge/100%25-free%20·%20no%20limits-34d399?style=flat-square">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-64748b?style=flat-square">
 </p>
 
@@ -25,6 +28,9 @@
 
 | الميزة | التفاصيل |
 |--------|-----------|
+| **مجاني بلا حدود** | لا حصة، لا 429 افتراضيًا، ولا مفتاح إلزامي؛ حدود اختيارية بمتغير بيئة واحد |
+| **صفحة عامة جاهزة** | `/` صفحة تعريف + حل صورة مباشر من المتصفح بلا تسجيل |
+| **نشر بضغطة** | `run.sh` · Docker Compose · Fly.io · Render · Railway · VPS + Caddy HTTPS |
 | **محرك حل محلي** | لا يعتمد على خدمة خارجية مدفوعة؛ يعمل بالكامل على أجهزة المستخدم |
 | **سيرفر API RESTful** | نقاط نهاية للحل متزامن وغير متزامن مع دعم WebSocket للتقدم الفعلي |
 | **كل أنواع الكبتشا** | صورة/نص، hCaptcha (عادي ومؤسسي)، reCAPTCHA v2/v2-invisible/v3، Cloudflare Turnstile، Drag puzzles، Point-on-image، Text، Math |
@@ -144,6 +150,41 @@
 - **الضبط التكيفي**: يُختار أفضل معالجات (psm، threshold، denoise) لكل نوع بناءً على سجل النجاح.
 - **أنماط معروفة**: يُخزّن النظام أنماطًا ناجحة مسبقة (مثل "AB12"، "1234"، "5+3") لاستخدامها فورًا عند مطابقة الميزات.
 - **نقاط النهاية**: `GET /experience/knowledge`، `POST /experience/find`
+
+## تشغيل خادم مجاني بلا حدود
+
+```bash
+git clone https://github.com/azerty1112/Nonzra && cd Nonzra
+bash run.sh
+```
+
+| الصفحة | المسار |
+|--------|--------|
+| الصفحة العامة (حل صورة مباشر) | `http://localhost:8000/` |
+| لوحة التحكم | `http://localhost:8000/dashboard` |
+| توثيق API تفاعلي | `http://localhost:8000/docs` |
+| حالة الخادم والحدود | `http://localhost:8000/status` |
+| مقاييس Prometheus | `http://localhost:8000/metrics` |
+
+```bash
+# بلا مفتاح وبلا حد
+curl -X POST http://localhost:8000/auto -F "file=@captcha.png"
+
+# حالة الوضع
+curl -s http://localhost:8000/status | python -m json.tool
+# { "mode": "unlimited", "free": true, "requires_api_key": false, ... }
+```
+
+| النشر | الملف | ملاحظة |
+|-------|-------|--------|
+| محلي | `run.sh` | يثبّت الناقص ثم يشغّل |
+| Docker | `docker-compose.yml` | منفذ 8000 + تخزين دائم |
+| إنتاجي + HTTPS | `docker-compose.prod.yml` + `Caddyfile` | شهادة تلقائية |
+| Fly.io | `fly.toml` | `fly launch --now --copy-config` |
+| Render | `render.yaml` | خطة مجانية + قرص 1GB |
+| Railway | `railway.json` + `Procfile` | نشر مباشر |
+
+التفاصيل الكاملة في **[docs/FREE_SERVER.md](docs/FREE_SERVER.md)**.
 
 ## عقل Nonzra الذاتي
 
