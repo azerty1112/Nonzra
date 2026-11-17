@@ -1,20 +1,42 @@
 """سجل المحركات: إدارة جميع حلّالات الكبتشا واختيار الأنسب لكل نوع."""
 
+import inspect
 from typing import Any, Dict, List, Optional
-import time
 
 from .base import BaseSolver, CaptchaType, SolverResult
-from .cnn import CNNSolver, CNNModelConfig, _TORCH_AVAILABLE
-from .image import ImageCaptchaSolver, ImageSolveConfig
-from .hcaptcha import HCaptchaSolver, ExternalService
-from .recaptcha import ReCaptchaSolver
-from .turnstile import TurnstileSolver
+from .cnn import _TORCH_AVAILABLE, CNNModelConfig, CNNSolver
 from .drag import DragSolver
-from .point import PointSolver
-from .slider import SliderSolver
-from .rotate import RotateSolver
+from .hcaptcha import HCaptchaSolver
+from .image import ImageCaptchaSolver, ImageSolveConfig
 from .math import MathSolver
+from .point import PointSolver
+from .recaptcha import ReCaptchaSolver
+from .rotate import RotateSolver
+from .slider import SliderSolver
 from .text import TextSolver
+from .turnstile import TurnstileSolver
+
+
+def _filter_kwargs_for(solver: BaseSolver, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """يرشّح الوسائط لتمرير ما يقبله توقيع الحلّال فقط.
+
+    مهم لأن نقاط النهاية تمرّر وسائط مشتركة (min_area، sitekey، config...)
+    بينما بعض الحلّالات لا تقبلها، ما كان يسبب TypeError وفشلًا دائمًا.
+    """
+    try:
+        signature = inspect.signature(solver.solve)
+    except (TypeError, ValueError):
+        return kwargs
+    params = signature.parameters
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return kwargs
+    accepted = {
+        name
+        for name, p in params.items()
+        if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        and name != "self"
+    }
+    return {k: v for k, v in kwargs.items() if k in accepted}
 
 
 class SolverRegistry:
@@ -52,7 +74,7 @@ class SolverRegistry:
         last_error: Optional[str] = None
         for solver in ordered:
             try:
-                result = solver.solve(*args, **kwargs)
+                result = solver.solve(*args, **_filter_kwargs_for(solver, kwargs))
                 if result.success:
                     return result
                 last_error = result.error
@@ -86,7 +108,9 @@ class SolverRegistry:
             ordered.sort(key=lambda s: not isinstance(s, ImageCaptchaSolver))
 
         async def _one(solver: BaseSolver) -> SolverResult:
-            return await asyncio.to_thread(solver.solve, *args, **kwargs)
+            return await asyncio.to_thread(
+                solver.solve, *args, **_filter_kwargs_for(solver, kwargs)
+            )
 
         last_error: Optional[str] = None
         for solver in ordered:

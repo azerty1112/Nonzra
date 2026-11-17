@@ -222,3 +222,12 @@ MIT - للاستخدام المصرح به في الاختبار والمراق�
 | `NONECAP_KEY_FILE` | مسار ملف مفتاح التشفير |
 | `NONECAP_CORS_ORIGINS` | أصول CORS مسموحة (`*` أو قائمة مفصولة بفواصل) |
 | `NVIDIA_API_KEY` / `NVIDIA_API_ENDPOINT` | خدمة حل خارجية اختيارية |
+
+## صيغة جسم الطلب في `/solve/{type}`
+
+تُقبل الصيغتان معًا:
+
+- **JSON**: `{"image_b64": "...", "psm": 7}` (يستخدمه SDK والاختبارات)
+- **multipart/form-data**: حقول `file` و`template` مع الحقول النصية مثل `psm=7&preprocess=true` (تستخدمها أمثلة `curl` وأداة الـ CLI)
+
+طلب لنوع محلي (image/text/math/drag/point/slider/rotate) بلا صورة يعيد `400` برسالة عربية واضحة.

@@ -1,12 +1,40 @@
 """حلّال Slider captchas: تحديد موضع الفجوة تلقائيًا بالحواف أو بالقالب."""
 
-from typing import Any, Optional
 import time
+from typing import Any, Optional
+
 import cv2
 import numpy as np
 
 from .base import BaseSolver, CaptchaType, SolverResult
 from .preprocess import load_image, load_image_bytes
+
+# أدنى درجة تطابق قالب مقبولة كحل احتياطي (أقل من ذلك = فشل صريح أفضل من إجابة خاطئة)
+_TEMPLATE_MIN_FALLBACK = 0.30
+
+
+def _match_template_best(
+    image_gray: "np.ndarray", template_gray: "np.ndarray"
+) -> "tuple[float, tuple[int, int], str]":
+    """يطابق القالب بالشدّة وبالحواف ويُعيد أفضل نتيجة.
+
+    المطابقة بالحواف (Canny) أكثر مقاومة لاختلاف الإضاءة بين قطعة اللغز
+    والفجوة المظللة، وهي الحالة الشائعة في كبتشا السلايدر.
+    """
+    res = cv2.matchTemplate(image_gray, template_gray, cv2.TM_CCOEFF_NORMED)
+    _, intensity_score, _, intensity_loc = cv2.minMaxLoc(res)
+
+    edges_img = cv2.Canny(image_gray, 60, 180)
+    edges_tmpl = cv2.Canny(template_gray, 60, 180)
+    if edges_tmpl.any() and edges_img.any():
+        res_edges = cv2.matchTemplate(edges_img, edges_tmpl, cv2.TM_CCOEFF_NORMED)
+        _, edge_score, _, edge_loc = cv2.minMaxLoc(res_edges)
+    else:
+        edge_score, edge_loc = -1.0, intensity_loc
+
+    if edge_score > intensity_score:
+        return float(edge_score), (int(edge_loc[0]), int(edge_loc[1])), "edges"
+    return float(intensity_score), (int(intensity_loc[0]), int(intensity_loc[1])), "intensity"
 
 
 class SliderSolver(BaseSolver):
@@ -44,13 +72,40 @@ class SliderSolver(BaseSolver):
             h, w = img.shape[:2]
 
             # 1) مع قالب: تطابق مباشر يعطي أعلى دقة
-            if tmpl is not None:
-                res = cv2.matchTemplate(
-                    cv2.cvtColor(img, cv2.COLOR_BGR2GRAY),
-                    cv2.cvtColor(tmpl, cv2.COLOR_BGR2GRAY),
-                    cv2.TM_CCOEFF_NORMED,
+            # يُحفظ أفضل تطابق قالب للاستخدام الاحتياطي إذا فشل كشف الحواف
+            template_fallback: Optional[dict] = None
+            if tmpl is not None and tmpl.shape[0] <= img.shape[0] and tmpl.shape[1] <= img.shape[1]:
+                img_gray = (
+                    cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                    if img.ndim == 3
+                    else img
                 )
-                _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                tmpl_gray = (
+                    cv2.cvtColor(tmpl, cv2.COLOR_BGR2GRAY)
+                    if tmpl.ndim == 3
+                    else tmpl
+                )
+                # قالب شبه موحّد لا يحمل تفاصيل كافية للمطابقة الموثوقة (CCOEFF_NORMED)
+                if float(tmpl_gray.std()) < 3.0:
+                    return SolverResult(
+                        success=False,
+                        captcha_type=self.captcha_type,
+                        error="القالب منخفض التفاصيل (تباين ضعيف)؛ تعذّر تحديد الفجوة بثقة",
+                        confidence=0.0,
+                        response_time_ms=int((time.time() - start) * 1000),
+                        metadata={"template_std": float(tmpl_gray.std())},
+                    )
+                max_val, max_loc, match_mode = _match_template_best(img_gray, tmpl_gray)
+                template_fallback = {
+                    "x": int(max_loc[0] + tmpl.shape[1] / 2),
+                    "y": int(max_loc[1] + tmpl.shape[0] / 2),
+                    "w": int(tmpl.shape[1]),
+                    "h": int(tmpl.shape[0]),
+                    "match": float(max_val),
+                    "match_mode": match_mode,
+                }
+                if max_val < _TEMPLATE_MIN_FALLBACK:
+                    template_fallback = None
                 if max_val >= 0.55:
                     x = int(max_loc[0] + tmpl.shape[1] / 2)
                     y = int(max_loc[1] + tmpl.shape[0] / 2)
@@ -66,6 +121,7 @@ class SliderSolver(BaseSolver):
                             "w": int(tmpl.shape[1]),
                             "h": int(tmpl.shape[0]),
                             "match": float(max_val),
+                            "match_mode": match_mode,
                             "method": "template",
                         },
                     )
@@ -80,6 +136,15 @@ class SliderSolver(BaseSolver):
             col_smooth[:margin] = 0.0
             col_smooth[-margin:] = 0.0
             if float(col_smooth.max()) <= 0.0:
+                if template_fallback is not None:
+                    return SolverResult(
+                        success=True,
+                        captcha_type=self.captcha_type,
+                        text=str(template_fallback["x"]),
+                        confidence=max(0.3, template_fallback["match"]),
+                        response_time_ms=int((time.time() - start) * 1000),
+                        metadata={**template_fallback, "method": "template_low_confidence"},
+                    )
                 return SolverResult(
                     success=False,
                     captcha_type=self.captcha_type,
@@ -90,6 +155,15 @@ class SliderSolver(BaseSolver):
             base = float(col_smooth.mean()) + 1e-6
             confidence = min(1.0, float(col_smooth[x_peak]) / (base * 8.0))
             if confidence < min_confidence:
+                if template_fallback is not None:
+                    return SolverResult(
+                        success=True,
+                        captcha_type=self.captcha_type,
+                        text=str(template_fallback["x"]),
+                        confidence=max(template_fallback["match"], confidence),
+                        response_time_ms=int((time.time() - start) * 1000),
+                        metadata={**template_fallback, "method": "template_low_confidence"},
+                    )
                 return SolverResult(
                     success=False,
                     captcha_type=self.captcha_type,

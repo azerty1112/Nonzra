@@ -725,6 +725,42 @@ def _decode_b64(value: Optional[str]) -> Optional[bytes]:
         return None
 
 
+async def _parse_solve_request(request: Request) -> BaseSolveRequest:
+    """يقرأ جسم الطلب بصيغة JSON أو form-data/multipart.
+
+    الوثائق وأداة الـ CLI يرسلان form-data، بينما العملاء البرمجيون يرسلون JSON؛
+    دعم الصيغتين يمنع أخطاء 422 التي كانت تحدث عند استخدام الصيغة الأخرى.
+    """
+    content_type = (request.headers.get("content-type") or "").lower()
+    if "application/json" in content_type:
+        try:
+            payload = await request.json()
+        except Exception:  # noqa: BLE001
+            payload = {}
+        return BaseSolveRequest(**payload) if isinstance(payload, dict) else BaseSolveRequest()
+
+    if "form" in content_type or "multipart" in content_type:
+        form = await request.form()
+        data: Dict[str, Any] = {}
+        for key, value in form.multi_items():
+            if key in ("file", "template") or not isinstance(value, str):
+                continue
+            data[key] = value
+        # التحويل الضمني للحقول الرقمية/المنطقية
+        for flag in ("preprocess", "human_like"):
+            if flag in data and isinstance(data[flag], str):
+                data[flag] = data[flag].strip().lower() in ("1", "true", "yes", "on")
+        for number_field in ("psm", "oem", "resize_width", "min_area"):
+            if number_field in data and isinstance(data[number_field], str):
+                try:
+                    data[number_field] = int(data[number_field])
+                except ValueError:
+                    data.pop(number_field, None)
+        return BaseSolveRequest(**data)
+
+    return BaseSolveRequest()
+
+
 def _build_kwargs(req: BaseSolveRequest, file_bytes: Optional[bytes] = None, template_bytes: Optional[bytes] = None) -> Dict[str, Any]:
     kwargs: Dict[str, Any] = {}
     if file_bytes is not None:
@@ -760,12 +796,12 @@ def _build_kwargs(req: BaseSolveRequest, file_bytes: Optional[bytes] = None, tem
 @limiter.limit("30/minute")
 async def solve_sync(
     request: Request, captcha_type: str,
-    req: BaseSolveRequest,
     file: Optional[UploadFile] = File(None),
     template: Optional[UploadFile] = File(None),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> SolveResponse:
     _auth(credentials)
+    req = await _parse_solve_request(request)
     try:
         ctype = CaptchaType(captcha_type)
     except ValueError:
@@ -774,6 +810,22 @@ async def solve_sync(
     file_bytes = await file.read() if file else None
     template_bytes = await template.read() if template else None
     kwargs = _build_kwargs(req, file_bytes, template_bytes)
+
+    # الأنواع المحلية تحتاج صورة فعلية: خطأ 400 واضح أفضل من فشل صامت
+    _image_required = {
+        CaptchaType.IMAGE,
+        CaptchaType.TEXT,
+        CaptchaType.MATH,
+        CaptchaType.DRAG,
+        CaptchaType.POINT,
+        CaptchaType.SLIDER,
+        CaptchaType.ROTATE,
+    }
+    if ctype in _image_required and not file_bytes and not req.image_b64:
+        raise HTTPException(
+            status_code=400,
+            detail=f"يجب توفير صورة الكبتشا (file أو image_b64) للنوع {ctype.value}",
+        )
 
     # --------- الذكاء التحليلي ----------
     analysis_dict: Optional[Dict[str, Any]] = None
@@ -867,12 +919,12 @@ async def solve_sync(
 @limiter.limit("60/minute")
 async def solve_async(
     request: Request, captcha_type: str,
-    req: BaseSolveRequest,
     file: Optional[UploadFile] = File(None),
     template: Optional[UploadFile] = File(None),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> SolveResponse:
     _auth(credentials)
+    req = await _parse_solve_request(request)
     try:
         ctype = CaptchaType(captcha_type)
     except ValueError:
