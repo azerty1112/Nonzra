@@ -737,9 +737,11 @@ async def _run_job(
 
         # تسجيل في محرك الخبرة إذا كانت الثقة عالية
         if result.success and result.confidence >= self_improver.retrain_confidence_threshold:
+            # دفاع على طبقتين: لا نُرمّز الصورة إطلاقًا إن كان التخزين معطّلًا.
+            # (المجموعة تُسقطها أيضًا، لكن عدم تمريرها أفضل من تمريرها ثم إسقاطها.)
             image_b64 = None
             image_bytes = kwargs.get("image_bytes")
-            if image_bytes is not None:
+            if image_bytes is not None and training_dataset.store_images:
                 import base64
 
                 image_b64 = base64.b64encode(image_bytes).decode("utf-8")
