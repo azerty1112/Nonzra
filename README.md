@@ -279,6 +279,7 @@ nonecap-clone/
 │   ├── bench.py                # مقياس دقة قابل للتشغيل (نفس البذرة ⇒ نفس الرقم)
 │   ├── resilience.py           # مهلة صارمة، قاطع دائرة، وتنويع المحاولات
 │   ├── abstain.py              # قرار «أُرسل أم أمتنع» المبني على إشارة الشكل
+│   ├── glyph_classifier.py     # تصحيح الأحرف الملتبسة شكلًا (L↔7، J↔3، 6↔9)
 │   ├── net.py                  # إعدادات الشبكة/الوكيل للاستدعاءات الخارجية
 │   ├── recaptcha.py            # reCAPTCHA v2/v3
 │   ├── turnstile.py            # Cloudflare Turnstile
