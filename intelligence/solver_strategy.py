@@ -1,12 +1,11 @@
 """طبقة الذكاء الحل - استراتيجيات حل ذكية، تجميع محركات، اختيار تكيف."""
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
-import time
+from typing import Any, List, Optional
 
-from solver_engine.base import CaptchaType, SolverResult, BaseSolver
 from intelligence.analysis import CaptchaAnalysis, CaptchaAnalyzer
 from intelligence.human_behavior import HumanBehavior
+from solver_engine.base import BaseSolver, CaptchaType, SolverResult
 
 
 @dataclass

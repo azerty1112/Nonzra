@@ -1,0 +1,27 @@
+# إعداد نشر Render (خطة مجانية) — خادم غير محدود
+services:
+  - type: web
+    name: nonzra
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    disk:
+      name: nonzra-data
+      mountPath: /app/data
+      sizeGB: 1
+    envVars:
+      - key: NONECAP_ENV
+        value: production
+      - key: NONECAP_UNLIMITED
+        value: "1"
+      - key: NONECAP_CONCURRENCY
+        value: "4"
+      - key: NONECAP_MAX_CONCURRENCY
+        value: "16"
+      - key: DATABASE_URL
+        value: sqlite:////app/data/nonecap_clone.db
+      - key: PORT
+        value: "8000"

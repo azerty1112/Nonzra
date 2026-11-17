@@ -1,9 +1,9 @@
 """الضبط التلقائي لمعاملات المعالجة المسبقة بناءً على النتائج السابقة (تعلّم تكيفي)."""
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
 import json
 import random
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 
 
 @dataclass

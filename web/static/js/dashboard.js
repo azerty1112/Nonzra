@@ -1,6 +1,7 @@
 /* لوحة تحكم Nonzra - التفاعل مع API */
 
-const API = "http://localhost:8000";
+// عنوان نسبي: يعمل من نفس الأصل (سيرفر محلي أو عبر بروكسي/نفق) بدون تعديل
+const API = window.NONECAP_API_BASE || "";
 let ws = null;
 let logTimer = null;
 
@@ -68,18 +69,69 @@ async function loadAutoStatus() {
 }
 
 async function loadHistory() {
+  const tb = document.getElementById("historyBody");
+  if (!tb) return;
+  tb.innerHTML = "";
+  try {
+    // النشاط الأخير من سجل التدقيق (أدق من التجميع)
+    const d = await api("/analytics/recent-activity?limit=25");
+    const events = d.recent_events || [];
+    if (events.length) {
+      events.forEach(ev => {
+        const tr = document.createElement("tr");
+        const details = ev.details || {};
+        const type = details.captcha_type || ev.resource_id || "-";
+        const ok = ev.success;
+        const conf = typeof details.confidence === "number" ? (details.confidence * 100).toFixed(0) + "%" : "-";
+        const ms = details.response_time_ms != null ? details.response_time_ms + "ms" : "-";
+        tr.innerHTML = `
+          <td>${new Date(ev.timestamp).toLocaleTimeString("ar-SA", { hour12: false })}</td>
+          <td>${escapeHtml(String(type))}</td>
+          <td>${escapeHtml(String(details.text || ev.resource || "-"))}</td>
+          <td>${conf}</td>
+          <td>${ms}</td>
+          <td>${escapeHtml(details.strategy || ev.action || "-")}</td>
+          <td><span class="badge ${ok ? "badge-ok" : "badge-bad"}">${ok ? "نجاح" : "فشل"}</span></td>`;
+        tb.appendChild(tr);
+      });
+      return;
+    }
+  } catch (e) {
+    // لا مفتاح API أو سجل فارغ → نعود للتجميع من /stats
+  }
   try {
     const d = await api("/stats");
-    const tb = document.getElementById("historyBody");
-    tb.innerHTML = "";
     const byType = d.by_type || {};
     Object.entries(byType).forEach(([type, count]) => {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${new Date().toLocaleDateString("ar-SA")}</td><td>${type}</td><td>${count}</td><td>-</td><td>-</td><td>-</td><td><span class="badge badge-ok">تم</span></td>`;
+      tr.innerHTML = `<td>${new Date().toLocaleDateString("ar-SA")}</td><td>${escapeHtml(type)}</td><td>${count}</td><td>-</td><td>-</td><td>-</td><td><span class="badge badge-ok">تم</span></td>`;
       tb.appendChild(tr);
     });
   } catch (e) {
     log("فشل تحميل التاريخ: " + e.message, "bad");
+  }
+}
+
+async function loadCapabilities() {
+  try {
+    const d = await api("/capabilities");
+    const types = d.supported_types || [];
+    const el = document.getElementById("capTypes");
+    if (el) el.textContent = types.length;
+    const list = document.getElementById("capList");
+    if (list) {
+      list.innerHTML = types
+        .map(t => `<span class="chip">${escapeHtml(t)}</span>`)
+        .join("");
+    }
+    const sel = document.getElementById("captchaTypeSelect");
+    if (sel && !sel.dataset.filled) {
+      sel.innerHTML = `<option value="">كشف تلقائي</option>` +
+        types.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join("");
+      sel.dataset.filled = "1";
+    }
+  } catch (e) {
+    log("فشل تحميل القدرات: " + e.message, "bad");
   }
 }
 
@@ -112,7 +164,7 @@ async function createKey() {
     document.getElementById("keyResult").textContent = "مفتاحك: " + d.api_key + "\n(احفظه، لن يُDisplayed مرة أخرى)";
     closeKeyModal();
     loadKeys();
-    log("تم إنشاء مفتاح API: " + d.key_id.slice(0, 8), "ok");
+    log("تم إنشاء مفتاح API: " + (d.key_id || "").slice(0, 8), "ok");
   } catch (e) {
     alert("فشل إنشاء المفتاح: " + e.message);
   }
@@ -154,14 +206,28 @@ async function solveAuto() {
 
   try {
     const d = await api("/auto", { method: "POST", body: form });
+    const res = d.result || {};
+    const confidence = typeof res.confidence === "number" ? res.confidence : 0;
+    const detection = typeof d.detection_confidence === "number" ? d.detection_confidence : 0;
+    const trace = Array.isArray(d.trace) ? d.trace : [];
+    const alerts = Array.isArray(d.alerts) ? d.alerts : [];
     resEl.innerHTML = `
-      <div><strong>النوع المكتشف:</strong> ${d.detected_type} (ثقة ${(d.detection_confidence*100).toFixed(1)}%)</div>
-      <div><strong>النتيجة:</strong> ${d.result.success ? "نجاح" : "فشل"}</div>
-      <div><strong>النص/التوكن:</strong> ${d.result.text || d.result.token || "-"}</div>
-      <div><strong>الثقة:</strong> ${(d.result.confidence*100).toFixed(1)}%</div>
-      <div><strong>الاستراتيجية:</strong> ${d.strategy_used}</div>
-      <div><strong>التصعيدات:</strong> ${d.escalations}</div>
-      <div style="margin-top:8px;font-size:.8rem;color:#94a3b8">الت Trace: ${d.trace.join(" | ")}</div>
+      <div class="result-head">
+        <span class="badge ${res.success ? "badge-ok" : "badge-bad"}">${res.success ? "نجاح" : "فشل"}</span>
+        <span style="color:var(--muted);font-size:.85rem">${escapeHtml(d.detected_type || "-")} · ثقة الكشف ${(detection*100).toFixed(1)}%</span>
+      </div>
+      <div class="result-text">${escapeHtml(res.text || res.token || "—")}</div>
+      <div class="result-meta">
+        <span>الثقة: ${(confidence*100).toFixed(1)}%</span>
+        <span>الاستراتيجية: ${escapeHtml(d.strategy_used || "-")}</span>
+        <span>التصعيدات: ${d.escalations ?? 0}</span>
+        <span>الزمن: ${d.total_time_ms ?? res.response_time_ms ?? 0}ms</span>
+      </div>
+      ${alerts.length ? `<div class="result-alerts">${alerts.map(a => `<div>⚠ ${escapeHtml(a.message || a.type || "")}</div>`).join("")}</div>` : ""}
+      <details style="margin-top:8px;font-size:.8rem;color:#94a3b8">
+        <summary style="cursor:pointer">مسار القرار (${trace.length} خطوة)</summary>
+        <div style="margin-top:6px">${trace.map(t => `<div>• ${escapeHtml(t)}</div>`).join("")}</div>
+      </details>
     `;
     log("الحل التلقائي اكتمل: " + (d.result.success ? "نجاح" : "فشل"), d.result.success ? "ok" : "bad");
     loadStats();
@@ -217,6 +283,79 @@ async function retrainModel() {
 
 function clearLogs() { document.getElementById("logs").innerHTML = ""; }
 
+
+function pct(x) { return Math.round((Number(x) || 0) * 100) + "%"; }
+
+function meterClass(rate) {
+  if (rate >= 0.75) return "";
+  if (rate >= 0.55) return "violet";
+  return "amber";
+}
+
+async function loadMind() {
+  try {
+    const d = await api("/mind");
+    const rating = Number(d.self_rating || 0);
+    document.getElementById("mindRating").textContent = pct(rating);
+    document.getElementById("mindRating").style.color =
+      rating >= 0.75 ? "var(--success)" : rating >= 0.55 ? "var(--accent)" : "var(--warning)";
+    document.getElementById("mindMood").textContent = d.mood || "—";
+    document.getElementById("mindCycles").textContent =
+      `${d.cycles || 0} دورة تعلّم · نجاح حديث ${pct(d.recent_success_rate)}`;
+    const brier = d.calibration && d.calibration.brier_score;
+    document.getElementById("mindBrier").textContent =
+      brier === null || brier === undefined ? "لا بيانات كافية بعد" : String(brier);
+
+    const ranking = (d.skills && d.skills.ranking) || [];
+    const skillsEl = document.getElementById("mindSkills");
+    if (ranking.length) {
+      skillsEl.innerHTML = ranking.map(sk => `
+        <div class="skill-row">
+          <span style="color:#cbd5e1">${escapeHtml(sk.captcha_type)}</span>
+          <div class="meter ${meterClass(sk.posterior_mean)}"><i style="width:${Math.round(sk.posterior_mean * 100)}%"></i></div>
+          <span class="stat-sub" style="text-align:left">${pct(sk.posterior_mean)}</span>
+        </div>`).join("");
+    } else {
+      skillsEl.innerHTML = `<div class="stat-sub">لم أجرّب أي نوع بعد — أول حل سيبدأ التعلّم.</div>`;
+    }
+
+    const notes = d.notes || [];
+    document.getElementById("mindNotes").innerHTML = notes
+      .map(n => `<li>${escapeHtml(n)}</li>`).join("");
+
+    const exp = d.next_experiment;
+    document.getElementById("mindPlan").innerHTML = exp
+      ? `<strong style="color:var(--accent)">تجربتي القادمة:</strong> ${escapeHtml(exp.target_type)} — ${escapeHtml(exp.advice)}`
+      : `<span class="stat-sub">العقل راضٍ عن أدائه الحالي ولا يرى تجربة عاجلة.</span>`;
+  } catch (e) {
+    log("فشل تحميل حالة العقل: " + e.message, "warn");
+  }
+}
+
+async function loadKnowledge() {
+  const el = document.getElementById("knowledgeCards");
+  el.innerHTML = `<div class="card-mini"><p>جاري التحميل...</p></div>`;
+  try {
+    const d = await api("/knowledge");
+    const cards = (d.cards || []).slice(0, 12);
+    if (!cards.length) {
+      el.innerHTML = `<div class="card-mini"><p>لا توجد بطاقات.</p></div>`;
+      return;
+    }
+    el.innerHTML = cards.map(c => `
+      <div class="card-mini">
+        <h4>${escapeHtml(c.title)} <span class="stat-sub">· صعوبة ${pct(c.difficulty)}</span></h4>
+        <p>${escapeHtml(c.summary)}</p>
+        ${c.facts && c.facts.length ? `<ul>${c.facts.slice(0, 3).map(f => `<li>${escapeHtml(f)}</li>`).join("")}</ul>` : ""}
+      </div>`).join("");
+  } catch (e) {
+    el.innerHTML = `<div class="card-mini"><p>تعذّر تحميل البطاقات: ${escapeHtml(e.message)}</p></div>`;
+  }
+}
+
+loadMind();
+setInterval(loadMind, 15000);
+
 // تحديث دوري
 setInterval(loadStats, 5000);
 setInterval(loadAutoStatus, 5000);
@@ -228,3 +367,5 @@ loadStats();
 loadAutoStatus();
 loadHistory();
 loadKeys();
+loadCapabilities();
+setInterval(loadCapabilities, 60000);

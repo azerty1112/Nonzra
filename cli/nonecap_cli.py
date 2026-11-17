@@ -287,6 +287,230 @@ def cmd_self_improve_retrain(args: argparse.Namespace) -> int:
             return 1
 
 
+def cmd_capabilities(args: argparse.Namespace) -> int:
+    """عرض أنواع الكبتشا المدعومة فعليًا على السيرفر."""
+    with _client(args.base_url, args.timeout, args.api_key) as c:
+        try:
+            r = c.get("/capabilities")
+            r.raise_for_status()
+            data = r.json()
+            if getattr(args, "json", False):
+                print(json.dumps(data, ensure_ascii=False, indent=2))
+                return 0
+            print(f"الإصدار: {data.get('version', '-')}")
+            print(f"عدد المحرّكات: {data.get('total_solvers', 0)}")
+            print("الأنواع المدعومة:")
+            for t in data.get("supported_types", []):
+                solvers = data.get("types", {}).get(t, {}).get("solvers", [])
+                print(f"  • {t:<22} ({', '.join(solvers) or '—'})")
+            missing = data.get("unsupported_types") or []
+            if missing:
+                print("غير مدعومة (تحتاج خدمة خارجية):")
+                print("  " + ", ".join(missing))
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            print(f"خطأ: {exc}", file=sys.stderr)
+            return 1
+
+
+def cmd_math(args: argparse.Namespace) -> int:
+    """حساب تعبير رياضي أو حل صورة كبتشا حسابية."""
+    payload: Dict[str, Any] = {}
+    if args.image:
+        with open(args.image, "rb") as fh:
+            payload["image_b64"] = base64.b64encode(fh.read()).decode("ascii")
+        payload["expression"] = ""
+    else:
+        payload["expression"] = args.expression
+    with _client(args.base_url, args.timeout, args.api_key) as c:
+        try:
+            r = c.post("/math/evaluate", json=payload)
+            r.raise_for_status()
+            data = r.json()
+            if data.get("success"):
+                print(data.get("answer"))
+            else:
+                print(f"فشل: {data.get('error')}", file=sys.stderr)
+                return 1
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            print(f"خطأ: {exc}", file=sys.stderr)
+            return 1
+
+
+def cmd_generate(args: argparse.Namespace) -> int:
+    """توليد صور كبتشا صناعية (لتدريب النموذج أو للاختبار)."""
+    import os
+
+    payload = {
+        "count": args.count,
+        "length": args.length,
+        "width": args.width,
+        "height": args.height,
+        "with_png": True,
+    }
+    if args.charset:
+        payload["charset"] = args.charset
+    if args.seed is not None:
+        payload["seed"] = args.seed
+    with _client(args.base_url, args.timeout, args.api_key) as c:
+        try:
+            r = c.post("/synthetic/batch", json=payload)
+            r.raise_for_status()
+            items = r.json().get("items", [])
+        except Exception as exc:  # noqa: BLE001
+            print(f"خطأ: {exc}", file=sys.stderr)
+            return 1
+
+    out_dir = args.out
+    os.makedirs(out_dir, exist_ok=True)
+    labels = []
+    for i, item in enumerate(items):
+        text = item.get("text", "")
+        path = os.path.join(out_dir, f"{i:04d}_{text}.png")
+        with open(path, "wb") as fh:
+            fh.write(base64.b64decode(item["png_base64"]))
+        labels.append(f"{os.path.basename(path)},{text}")
+        print(path)
+    if args.labels:
+        with open(args.labels, "w", encoding="utf-8") as fh:
+            fh.write("filename,text\n" + "\n".join(labels) + "\n")
+        print(f"ملف التسميات: {args.labels}")
+    print(f"تم توليد {len(items)} صورة في {out_dir}")
+    return 0
+
+
+def cmd_parse_math(args: argparse.Namespace) -> int:
+    """حساب تعبير محليًا دون الحاجة للسيرفر."""
+    from solver_engine.math import evaluate_expression, format_number, normalize_expression
+
+    expression = normalize_expression(args.expression)
+    ok, value, error = evaluate_expression(expression)
+    if not ok or value is None:
+        print(f"فشل: {error}", file=sys.stderr)
+        return 1
+    print(format_number(value))
+    return 0
+
+
+def cmd_mind(args: argparse.Namespace) -> int:
+    """عرض تقرير العقل الذاتي: التقييم، المهارات، الدروس، والخطة القادمة."""
+    with _client(args.base_url, args.timeout, args.api_key) as c:
+        try:
+            r = c.get("/mind")
+            r.raise_for_status()
+            d = r.json()
+        except Exception as exc:  # noqa: BLE001
+            print(f"خطأ: {exc}", file=sys.stderr)
+            return 1
+    if getattr(args, "json", False):
+        print(json.dumps(d, ensure_ascii=False, indent=2))
+        return 0
+    print("=" * 64)
+    print("عقل Nonzra الذاتي")
+    print("=" * 64)
+    print(f"تقييم الكفاءة : {d.get('self_rating', 0):.2%}")
+    print(f"الحالة        : {d.get('mood', '-')}")
+    print(f"دورات التعلّم  : {d.get('cycles', 0)}  |  نجاح حديث: {d.get('recent_success_rate', 0):.2%}")
+    calib = d.get("calibration") or {}
+    brier = calib.get("brier_score")
+    print(f"المعايرة      : {'—' if brier is None else brier} (Brier، أقل أفضل) | مشاهدات: {calib.get('observations', 0)}")
+    ranking = (d.get("skills") or {}).get("ranking") or []
+    if ranking:
+        print("\nالمهارات:")
+        for sk in ranking:
+            bar = "█" * int(round(sk["posterior_mean"] * 20))
+            print(f"  {sk['captcha_type']:<20} {bar:<20} {sk['posterior_mean']:.0%}  ({sk['verdict']})")
+    notes = d.get("notes") or []
+    if notes:
+        print("\nملاحظات العقل:")
+        for note in notes:
+            print(f"  • {note}")
+    exp = d.get("next_experiment")
+    if exp:
+        print("\nالتجربة القادمة:")
+        print(f"  {exp.get('target_type')} — {exp.get('advice')}")
+    return 0
+
+
+def cmd_plan(args: argparse.Namespace) -> int:
+    """يسأل العقل عن أفضل مسار لنوع معيّن ويشرح السبب."""
+    payload = {
+        "captcha_type": args.type,
+        "difficulty": args.difficulty,
+        "external_available": args.external,
+        "prefer_speed": args.fast,
+    }
+    with _client(args.base_url, args.timeout, args.api_key) as c:
+        try:
+            r = c.post("/mind/plan", json=payload)
+            r.raise_for_status()
+            d = r.json()
+        except Exception as exc:  # noqa: BLE001
+            print(f"خطأ: {exc}", file=sys.stderr)
+            return 1
+    if getattr(args, "json", False):
+        print(json.dumps(d, ensure_ascii=False, indent=2))
+        return 0
+    print(d.get("explanation", ""))
+    print(f"المسار: {d.get('chosen')}  |  طاقة متوقعة: {d.get('expected_value')}")
+    for alt in d.get("alternatives", []):
+        print(f"  - {alt['route']:<26} ثقة {alt['success_probability']:.2f}  قيمة {alt['expected_value']:+.3f}")
+    return 0
+
+
+def cmd_knowledge(args: argparse.Namespace) -> int:
+    """بطاقات المعرفة أو معرفة العقل عن نوع معيّن."""
+    with _client(args.base_url, args.timeout, args.api_key) as c:
+        try:
+            if args.type:
+                r = c.get(f"/knowledge/for/{args.type}")
+            else:
+                r = c.get("/knowledge")
+            r.raise_for_status()
+            d = r.json()
+        except Exception as exc:  # noqa: BLE001
+            print(f"خطأ: {exc}", file=sys.stderr)
+            return 1
+    if getattr(args, "json", False):
+        print(json.dumps(d, ensure_ascii=False, indent=2))
+        return 0
+    if args.type:
+        print(d["decision"]["explanation"])
+        for insight in d.get("known_insights", []):
+            print(f"\n• {insight}")
+        pitfalls = d.get("pitfalls") or []
+        if pitfalls:
+            print("\nمصائد يجب تجنّبها:")
+            for p in pitfalls:
+                print(f"  - {p}")
+        return 0
+    cards = d.get("cards", [])
+    print(f"عدد البطاقات: {len(cards)}")
+    for card in cards:
+        print(f"\n[{card['category']}] {card['title']} (صعوبة {card['difficulty']:.2f})")
+        print(f"  {card['summary']}")
+    return 0
+
+
+def cmd_quiz(args: argparse.Namespace) -> int:
+    """كويز من الذخيرة المعرفية."""
+    with _client(args.base_url, args.timeout, args.api_key) as c:
+        try:
+            r = c.get("/knowledge/quiz", params={"limit": args.limit, "seed": args.seed})
+            r.raise_for_status()
+            questions = r.json().get("questions", [])
+        except Exception as exc:  # noqa: BLE001
+            print(f"خطأ: {exc}", file=sys.stderr)
+            return 1
+    for i, q in enumerate(questions, 1):
+        print(f"\n{i}. {q['question']}")
+        for j, opt in enumerate(q["options"]):
+            print(f"   [{j}] {opt}")
+        print(f"   (الجواب: {q['answer_index']})")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="nonecap", description="CLI لسيرفر NoneCap Clone")
     p.add_argument("--base-url", default="http://localhost:8000", help="رابط السيرفر")
@@ -374,6 +598,52 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("self-improve-retrain", help="إعادة تدريب النموذج الذاتي")
     sp.set_defaults(func=cmd_self_improve_retrain)
+
+    sp = sub.add_parser("capabilities", help="عرض أنواع الكبتشا المدعومة والمحرّكات")
+    sp.add_argument("--json", action="store_true", help="إخراج JSON")
+    sp.set_defaults(func=cmd_capabilities)
+
+    sp = sub.add_parser("math", help="حساب تعبير رياضي أو حل صورة كبتشا حسابية عبر السيرفر")
+    sp.add_argument("expression", nargs="?", default="", help="مثال: 5+3 أو '12 × 4'")
+    sp.add_argument("--image", default=None, help=" صورة كبتشا حسابية بدلًا من التعبير")
+    sp.set_defaults(func=cmd_math)
+
+    sp = sub.add_parser("calc", help="حساب تعبير محليًا (بدون سيرفر)")
+    sp.add_argument("expression")
+    sp.set_defaults(func=cmd_parse_math)
+
+    sp = sub.add_parser("generate", help="توليد صور كبتشا صناعية للتدريب/الاختبار")
+    sp.add_argument("--count", type=int, default=10)
+    sp.add_argument("--length", type=int, default=4)
+    sp.add_argument("--width", type=int, default=160)
+    sp.add_argument("--height", type=int, default=60)
+    sp.add_argument("--charset", default=None)
+    sp.add_argument("--seed", type=int, default=None)
+    sp.add_argument("--out", default="synthetic_captchas")
+    sp.add_argument("--labels", default=None, help="مسار ملف CSV للتسميات")
+    sp.set_defaults(func=cmd_generate)
+
+    sp = sub.add_parser("mind", help="تقرير العقل الذاتي: المهارات والدروس والخطة")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_mind)
+
+    sp = sub.add_parser("plan", help="أفضل مسار لنوع كبتشا مع شرح السبب")
+    sp.add_argument("--type", default="image")
+    sp.add_argument("--difficulty", type=float, default=0.5)
+    sp.add_argument("--external", action="store_true", help="السماح بالمسارات الخارجية")
+    sp.add_argument("--fast", action="store_true", help="تفضيل السرعة")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_plan)
+
+    sp = sub.add_parser("knowledge", help="بطاقات المعرفة أو معرفة نوع معيّن")
+    sp.add_argument("--type", default=None, help="نوع كبتشا لعرض معرفة العقل عنه")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_knowledge)
+
+    sp = sub.add_parser("quiz", help="أسئلة تدريب من الذخيرة المعرفية")
+    sp.add_argument("--limit", type=int, default=3)
+    sp.add_argument("--seed", type=int, default=None)
+    sp.set_defaults(func=cmd_quiz)
 
     sp = sub.add_parser("interactive", help="وضع تفاعلي للحل والتحكم")
     sp.add_argument("--base-url", default="http://localhost:8000", help="رابط السيرفر")
@@ -519,9 +789,43 @@ def cmd_interactive(args: argparse.Namespace) -> int:
     return 0
 
 
+_GLOBAL_FLAGS = ("--base-url", "--timeout", "--api-key")
+
+
+def _normalize_argv(argv):
+    """يسمح بتمرير الخيارات العامة قبل الأمر أو بعده (مثل git)."""
+    if argv is None:
+        argv = sys.argv[1:]
+    argv = list(argv)
+    global_args = []
+    rest = []
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        matched = None
+        for flag in _GLOBAL_FLAGS:
+            if token == flag:
+                if i + 1 < len(argv):
+                    global_args.extend([flag, argv[i + 1]])
+                    i += 2
+                else:
+                    i += 1
+                matched = flag
+                break
+            if token.startswith(flag + "="):
+                global_args.append(token)
+                i += 1
+                matched = flag
+                break
+        if matched is None:
+            rest.append(token)
+            i += 1
+    return global_args + rest
+
+
 def main(argv=None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(_normalize_argv(argv))
     return args.func(args)
 
 

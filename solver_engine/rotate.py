@@ -75,11 +75,20 @@ class RotateSolver(BaseSolver):
                         if score > best_score:
                             best_score = score
                             best_angle = float(a)
+
+                    # تنقيح بدقة درجة واحدة حول أفضل زاوية خام
+                    for a in range(int(best_angle - coarse_step), int(best_angle + coarse_step) + 1):
+                        rotated = _rotate(tmpl_gray, float(a))
+                        score = float(cv2.matchTemplate(crop_gray, rotated, cv2.TM_CCOEFF_NORMED)[0][0])
+                        if score > best_score:
+                            best_score = score
+                            best_angle = float(a)
+
                     correction = (-best_angle + 180.0) % 360.0 - 180.0
                     return SolverResult(
                         success=True,
                         captcha_type=self.captcha_type,
-                        text=f"{correction:.1f}",
+                        text=f"{best_angle:.1f}",
                         confidence=min(1.0, best_score),
                         response_time_ms=int((time.time() - start) * 1000),
                         metadata={

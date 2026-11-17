@@ -1,10 +1,9 @@
 """طبقة الذكاء التفاعلي - محاكاة السلوك البشري (حركات ماوس، كتابة، تأخيرات)."""
 
-from dataclasses import dataclass, field
-from typing import List, Tuple, Optional
 import math
 import random
-import time
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
 
 
 @dataclass

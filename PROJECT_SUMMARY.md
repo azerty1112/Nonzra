@@ -115,13 +115,13 @@ from solver_engine.base import CaptchaType
 # With API key parameter
 orch = AutoOrchestrator(
     registry=registry,
-    nvidia_api_key="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",
+    nvidia_api_key="nvapi-YOUR_KEY_HERE",
     nvidia_api_endpoint="https://api.nvidia.com/v1/captcha/solve"
 )
 
 # Or via environment variables (automatically picked up)
 import os
-os.environ['NVIDIA_API_KEY'] = "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"
+os.environ['NVIDIA_API_KEY'] = "nvapi-YOUR_KEY_HERE"
 
 # Initialize without passing key - will pick up from env
 orch = AutoOrchestrator(registry=registry)

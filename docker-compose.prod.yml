@@ -1,0 +1,51 @@
+# نشر إنتاجي كامل: الخادم + Caddy مع HTTPS تلقائي
+# الاستخدام:
+#   DOMAIN=captcha.example.com docker compose -f docker-compose.prod.yml up -d
+services:
+  nonecap-api:
+    build: .
+    image: nonecap/clone:latest
+    container_name: nonecap-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - NONECAP_ENV=production
+      - NONECAP_UNLIMITED=${NONECAP_UNLIMITED:-1}
+      - DATABASE_URL=sqlite:////app/data/nonecap_clone.db
+    expose:
+      - "8000"
+    volumes:
+      - nonecap-data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: nonecap-caddy
+    restart: unless-stopped
+    depends_on:
+      - nonecap-api
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    command: caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+
+volumes:
+  nonecap-data:
+  caddy-data:
+  caddy-config:

@@ -1,9 +1,10 @@
 """الكشف التلقائي لنوع الكبتشا من الصورة (ذكاء التصنيف) باستخدام قاعدة المعرفة الشاملة."""
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
-import numpy as np
+from typing import Any, Dict
+
 import cv2
+import numpy as np
 
 from intelligence.captcha_knowledge import CAPTCHA_TYPES, list_types
 

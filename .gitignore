@@ -22,3 +22,18 @@ knowledge_base.json
 training_data.json
 api_keys.json
 nonecap_clone.db
+
+# بيانات المفتاح الدائم والمولّد الصناعي
+data/
+.encryption_key
+synthetic_captchas/
+.coverage
+coverage.xml
+.htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# ملفات حالة وقت التشغيل
+audit.log
+data/*.json
+.encryption_key

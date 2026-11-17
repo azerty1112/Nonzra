@@ -1,16 +1,44 @@
 """سجل المحركات: إدارة جميع حلّالات الكبتشا واختيار الأنسب لكل نوع."""
 
+import inspect
 from typing import Any, Dict, List, Optional
-import time
 
 from .base import BaseSolver, CaptchaType, SolverResult
-from .cnn import CNNSolver, CNNModelConfig, _TORCH_AVAILABLE
-from .image import ImageCaptchaSolver, ImageSolveConfig
-from .hcaptcha import HCaptchaSolver, ExternalService
-from .recaptcha import ReCaptchaSolver
-from .turnstile import TurnstileSolver
+from .cnn import _TORCH_AVAILABLE, CNNModelConfig, CNNSolver
 from .drag import DragSolver
+from .hcaptcha import HCaptchaSolver
+from .hcaptcha_live import HCaptchaLiveSolver
+from .ocr import engines_status
+from .image import ImageCaptchaSolver, ImageSolveConfig
+from .math import MathSolver
 from .point import PointSolver
+from .recaptcha import ReCaptchaSolver
+from .rotate import RotateSolver
+from .slider import SliderSolver
+from .text import TextSolver
+from .turnstile import TurnstileSolver
+
+
+def _filter_kwargs_for(solver: BaseSolver, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """يرشّح الوسائط لتمرير ما يقبله توقيع الحلّال فقط.
+
+    مهم لأن نقاط النهاية تمرّر وسائط مشتركة (min_area، sitekey، config...)
+    بينما بعض الحلّالات لا تقبلها، ما كان يسبب TypeError وفشلًا دائمًا.
+    """
+    try:
+        signature = inspect.signature(solver.solve)
+    except (TypeError, ValueError):
+        return kwargs
+    params = signature.parameters
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return kwargs
+    accepted = {
+        name
+        for name, p in params.items()
+        if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        and name != "self"
+    }
+    return {k: v for k, v in kwargs.items() if k in accepted}
 
 
 class SolverRegistry:
@@ -48,7 +76,7 @@ class SolverRegistry:
         last_error: Optional[str] = None
         for solver in ordered:
             try:
-                result = solver.solve(*args, **kwargs)
+                result = solver.solve(*args, **_filter_kwargs_for(solver, kwargs))
                 if result.success:
                     return result
                 last_error = result.error
@@ -82,7 +110,9 @@ class SolverRegistry:
             ordered.sort(key=lambda s: not isinstance(s, ImageCaptchaSolver))
 
         async def _one(solver: BaseSolver) -> SolverResult:
-            return await asyncio.to_thread(solver.solve, *args, **kwargs)
+            return await asyncio.to_thread(
+                solver.solve, *args, **_filter_kwargs_for(solver, kwargs)
+            )
 
         last_error: Optional[str] = None
         for solver in ordered:
@@ -104,11 +134,17 @@ class SolverRegistry:
 # مثيل افتراضي يتم استيراده في السيرفر
 registry = SolverRegistry()
 registry.register(ImageCaptchaSolver())
+# سلسلة الخدمات الخارجية أولًا (إن ضُبطت)، ثم الحل المباشر عبر بروتوكول hCaptcha
 registry.register(HCaptchaSolver())
+registry.register(HCaptchaLiveSolver())
 registry.register(ReCaptchaSolver())
 registry.register(TurnstileSolver())
 registry.register(DragSolver())
 registry.register(PointSolver())
+registry.register(SliderSolver())
+registry.register(RotateSolver())
+registry.register(MathSolver())
+registry.register(TextSolver())
 
 
 def configure_hcaptcha_external(
@@ -131,6 +167,49 @@ def configure_hcaptcha_external(
         enable_fallback=enable_fallback,
     )
     registry._solvers[CaptchaType.HCAPTCHA] = [hcaptcha_solver]
+
+
+def configure_hcaptcha_live(max_rounds: int = 2) -> HCaptchaLiveSolver:
+    """يفعّل/يضبط محرّك hCaptcha المباشر (بلا خدمات مدفوعة)."""
+    solver = HCaptchaLiveSolver(max_rounds=max_rounds)
+    current = [
+        s
+        for s in registry._solvers.get(CaptchaType.HCAPTCHA, [])
+        if not isinstance(s, HCaptchaLiveSolver)
+    ]
+    registry._solvers[CaptchaType.HCAPTCHA] = current + [solver]
+    return solver
+
+
+def probe_hcaptcha(
+    sitekey: str = "10000000-ffff-ffff-ffff-000000000001",
+    url: str = "https://accounts.hcaptcha.com/demo",
+) -> Dict[str, Any]:
+    """يفحص إمكانية الوصول إلى hCaptcha من هذه البيئة بلا محاولة حل.
+
+    مفيد لتشخيص «هل الشبكة تحجب hCaptcha؟» قبل أي محاولة.
+    """
+    from .net import NETWORK, hcaptcha_base_url
+
+    solver = HCaptchaLiveSolver()
+    result: Dict[str, Any] = {
+        "base_url": hcaptcha_base_url(),
+        "network": NETWORK.to_dict(),
+        "ocr": engines_status(),
+        "reachable": False,
+    }
+    try:
+        config = solver.checksiteconfig(sitekey, url)
+        result["reachable"] = True
+        result["challenge_required"] = not bool(config.get("pass"))
+        result["config_keys"] = sorted(config.keys())[:8]
+    except Exception as exc:  # noqa: BLE001
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        result["hint"] = (
+            "إن كان الخطأ TLS/ConnectError فالشبكة تحجب نطاق hCaptcha. "
+            "مرّر وكيلًا عبر NONECAP_HCAPTCHA_PROXY أو شغّل الخادم على شبكة أخرى."
+        )
+    return result
 
 
 def get_hcaptcha_service_stats() -> List[Dict[str, Any]]:
@@ -171,11 +250,33 @@ def get_cnn_stats() -> Dict[str, Any]:
     return {"available": False, "trained": False, "torch_available": _TORCH_AVAILABLE}
 
 
+def get_capabilities() -> Dict[str, Any]:
+    """يُعيد قائمة أنواع الكبتشا المدعومة وعدد المحركات المسجّلة لكل نوع."""
+    types = {}
+    for ctype, solvers in registry._solvers.items():
+        types[ctype.value] = {
+            "solvers": [type(s).__name__ for s in solvers],
+            "count": len(solvers),
+        }
+    missing = sorted(
+        t.value for t in CaptchaType if t.value not in types
+    )
+    return {
+        "supported_types": sorted(types.keys()),
+        "types": types,
+        "unsupported_types": missing,
+        "total_solvers": sum(v["count"] for v in types.values()),
+    }
+
+
 __all__ = [
     "SolverRegistry",
     "registry",
+    "get_capabilities",
     "configure_hcaptcha_external",
     "get_hcaptcha_service_stats",
+    "configure_hcaptcha_live",
+    "probe_hcaptcha",
     "configure_cnn_solver",
     "get_cnn_stats",
 ]

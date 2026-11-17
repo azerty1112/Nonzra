@@ -1,52 +1,54 @@
-# مرحلة البناء - تثبيت الاعتمادات
+# المرحلة 1: الاعتمادات فقط (بدون أدوات البناء الثقيلة)
 FROM python:3.11-slim AS builder
 
 WORKDIR /app
 
-# تثبيت أدوات البناء
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
-# تثبيت الاعتمادات Python
 COPY api_server/requirements.txt ./api_server/requirements.txt
-RUN pip install --no-cache-dir --user -r api_server/requirements.txt
+# torch/torchvision اختيارية وضخمة جدًا؛ تُستثنى صورة التشغيل الافتراضية
+RUN grep -viE '^(torch|torchvision)' api_server/requirements.txt > /tmp/requirements.txt \
+    && pip install --no-cache-dir --user -r /tmp/requirements.txt
 
-# مرحلة التشغيل - صورة نهائية خفيفة
+# المرحلة 2: صورة التشغيل النهائية
 FROM python:3.11-slim
 
-# تثبيت تesseract和 librosas
+# Tesseract مطلوب لقراءة كبتشا الصور والنصوص والعمليات الحسابية
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
-    libtesseract-dev \
-    libgl1-mesa-glx \
+    tesseract-ocr-ara \
+    libgl1 \
     libglib2.0-0 \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# إنشاء مستخدم غير جذر للأمان
+# مستخدم غير جذري للأمان
 RUN groupadd -r nonecap && useradd -r -g nonecap -d /app -s /sbin/nologin nonecap
 
 WORKDIR /app
 
-# نسخ الاعتمادات المثبتة من مرحلة البناء
 COPY --from=builder /root/.local /home/nonecap/.local
-ENV PATH=/home/nonecap/.local/bin:$PATH
+ENV PATH=/home/nonecap/.local/bin:$PATH \
+    PYTHONUNBUFFERED=1 \
+    NONECAP_ENV=production
 
-# نسخ كود التطبيق
 COPY --chown=nonecap:nonecap solver_engine ./solver_engine
 COPY --chown=nonecap:nonecap api_server ./api_server
 COPY --chown=nonecap:nonecap clients ./clients
 COPY --chown=nonecap:nonecap intelligence ./intelligence
 COPY --chown=nonecap:nonecap browser ./browser
 COPY --chown=nonecap:nonecap extension ./extension
+COPY --chown=nonecap:nonecap web ./web
+COPY --chown=nonecap:nonecap cli ./cli
 COPY --chown=nonecap:nonecap pyproject.toml ./
 
-# تغيير المستخدم إلى غير جذر
+RUN mkdir -p /app/data && chown nonecap:nonecap /app/data
+ENV DATABASE_URL=sqlite:////app/data/nonecap_clone.db
+VOLUME ["/app/data"]
+
 USER nonecap
 
-# كشف المنفذ
 EXPOSE 8000
 
-# أمر التشغيل
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:8000/health || exit 1
+
 CMD ["python", "-m", "uvicorn", "api_server.main:app", "--host", "0.0.0.0", "--port", "8000"]

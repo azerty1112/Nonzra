@@ -1,0 +1,5 @@
+# اعتمادات التطوير والاختبار (بدون torch — أخف وأسرع للـ CI)
+-r requirements.txt
+pytest>=7.0
+pytest-asyncio>=0.21
+httpx>=0.24

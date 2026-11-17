@@ -7,6 +7,7 @@ import pytesseract
 from PIL import Image
 
 from .base import SolverResult, CaptchaType, BaseSolver
+from .ocr import read_text as read_text_neural
 from .preprocess import (
     load_image,
     load_image_bytes,
@@ -28,6 +29,10 @@ class ImageSolveConfig:
     threshold: str = "otsu"
     denoise: bool = True
     segment: bool = False
+    # دقة القراءة العميقة: التجميع التكيّفي بين طرق العرض + مستوى التصعيد
+    ensemble: bool = True
+    ocr_level: str = "balanced"  # fast | balanced | max
+    expected_len: Optional[int] = None  # طول النص إن عُرف (يرفع الدقة)
 
 
 # ---------------------- قوالب الأحرف الاحتياطية (بدون Tesseract) ----------------------
@@ -136,20 +141,39 @@ class ImageCaptchaSolver(BaseSolver):
             else:
                 pil_image = to_pil(image)
 
-            # --------- المحاولة الأولى: Tesseract إن توفّر ----------
+            # --------- المحاولة 1: قراءة عصبية (RapidOCR) — الأعلى دقة ----------
             text = ""
-            try:
-                custom_config = f"--psm {cfg.psm} --oem {cfg.oem}"
-                if cfg.whitelist:
-                    custom_config += f" -c tessedit_char_whitelist={cfg.whitelist}"
-                text = pytesseract.image_to_string(pil_image, config=custom_config).strip()
-                text = "".join(ch for ch in text if ch.isalnum())
-            except Exception:
-                text = ""
+            method = "neural_ocr"
+            confidence = 0.0
+            neural = None
+            neural = read_text_neural(
+                np.array(pil_image.convert("L")) if hasattr(pil_image, "convert") else image,
+                allowlist=cfg.whitelist,
+                # التجميع التكيّفي: يبدأ بأرخص طريقة عرض ويتصاعد فقط عند الشك
+                ensemble=cfg.ensemble,
+                level=cfg.ocr_level,
+                expected_len=cfg.expected_len,
+            )
+            if neural.success:
+                text = neural.text
+                confidence = neural.confidence
+                method = f"neural_ocr:{neural.engine}"
 
-            # --------- الحل الاحتياطي إذا فشل Tesseract ----------
-            method = "tesseract"
-            confidence = 0.7 if text else 0.0
+            # --------- المحاولة 2: Tesseract إن توفّر ولم تنجح العصبية ----------
+            if not text:
+                try:
+                    custom_config = f"--psm {cfg.psm} --oem {cfg.oem}"
+                    if cfg.whitelist:
+                        custom_config += f" -c tessedit_char_whitelist={cfg.whitelist}"
+                    text = pytesseract.image_to_string(pil_image, config=custom_config).strip()
+                    text = "".join(ch for ch in text if ch.isalnum())
+                    if text:
+                        confidence = 0.7
+                        method = "tesseract"
+                except Exception:
+                    text = ""
+
+            # --------- الحل الاحتياطي: مطابقة القوالب ----------
             if (cfg.segment and not text) or (not text and cfg.segment is False):
                 try:
                     fb_text, fb_conf = _fallback_ocr(image)
@@ -161,13 +185,18 @@ class ImageCaptchaSolver(BaseSolver):
                     pass
 
             elapsed = int((time.time() - start) * 1000)
+            metadata: dict = {"chars": len(text), "method": method}
+            # أثر القراءة العميقة: هل الثقة الخام عُدّلت؟ وكم طريقة عرض جُرّبت؟
+            if neural is not None and int(getattr(neural, "variants_tried", 0) or 0):
+                metadata.update(neural.to_dict())
+                metadata["method"] = method
             return SolverResult(
                 success=bool(text),
                 captcha_type=self.captcha_type,
                 text=text or None,
                 confidence=confidence,
                 response_time_ms=elapsed,
-                metadata={"chars": len(text), "method": method},
+                metadata=metadata,
             )
         except Exception as exc:  # noqa: BLE001
             elapsed = int((time.time() - start) * 1000)

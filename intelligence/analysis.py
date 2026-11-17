@@ -1,10 +1,10 @@
 """طبقة الذكاء التحليلي - تحليل صعوبة الكبتشا وتوقع معدل النجاح."""
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
-import math
-import numpy as np
+from typing import Any, Dict, List
+
 import cv2
+import numpy as np
 
 
 @dataclass
