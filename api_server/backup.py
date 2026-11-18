@@ -28,6 +28,8 @@ class BackupInfo:
     includes_intelligence: bool
     status: str  # creating, completed, failed
     error: Optional[str] = None
+    #: ملفات حسّاسة استُثنيت من هذه النسخة (شفافية: المستخدم يعرف ما حُفظ)
+    excluded: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -42,6 +44,16 @@ class BackupInfo:
             "status": self.status,
             "error": self.error,
         }
+
+
+def _samples_in_backup() -> bool:
+    """هل يُسمح بإدخال بيانات عينات المستخدمين في النسخ الاحتياطية؟ لا افتراضيًا."""
+    return os.environ.get("NONECAP_BACKUP_SAMPLES", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 class BackupManager:
@@ -111,11 +123,23 @@ class BackupManager:
                         if os.path.exists(config_file):
                             tar.add(config_file, arcname=config_file)
 
-                # نسخ ملفات الذكاء الاصطناعي
+                # نسخ ملفات الذكاء الاصطناعي.
+                # `training_data.json` قد يحمل صور المستخدمين ⇒ يُعامل كملف محمي:
+                # لا يدخل أي نسخة احتياطية إلا بتفعيل صريح، ويُبلَّغ عنه دائمًا.
                 if include_intelligence:
-                    for intel_file in ["knowledge_base.json", "training_data.json", "intelligence/knowledge_base.json", "intelligence/training_data.json"]:
+                    for intel_file in ["knowledge_base.json", "intelligence/knowledge_base.json"]:
                         if os.path.exists(intel_file):
                             tar.add(intel_file, arcname=intel_file)
+                    if os.path.exists("training_data.json"):
+                        if _samples_in_backup():
+                            tar.add("training_data.json", arcname="training_data.json")
+                            backup_info.excluded.append(
+                                "training_data.json: حُفظ لأن NONECAP_BACKUP_SAMPLES=true"
+                            )
+                        else:
+                            backup_info.excluded.append(
+                                "training_data.json: مُستثنى (يحتوي بيانات مستخدمين)"
+                            )
 
                 # نسخ ملفات الإضافة
                 if os.path.exists("extension"):

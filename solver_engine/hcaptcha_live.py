@@ -25,6 +25,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .base import BaseSolver, CaptchaType, SolverResult
 from .net import NETWORK, hcaptcha_base_url
+from .abstain import decide as decide_abstain
+from .abstain import threshold_for_round
 from .resilience import (
     AttemptLog,
     TimeoutExceeded,
@@ -243,11 +245,16 @@ class HCaptchaLiveSolver(BaseSolver):
 
     def __init__(
         self,
-        max_rounds: int = 3,
+        max_rounds: int = 2,
         deadline_seconds: float = 120.0,
         call_timeout: Optional[float] = None,
+        abstain_threshold: float = 0.45,
+        allow_abstain: bool = True,
     ) -> None:
         self.max_rounds = max(1, max_rounds)
+        # عتبة الامتناع: أقل من هذا الاحتمال نطلب تحدٍّ جديدًا بدل إحراق محاولة
+        self.abstain_threshold = abstain_threshold
+        self.allow_abstain = allow_abstain
         # مهلة كل استدعاء شبكي/قراءة (افتراضيًا مهلة الشبكة + هامش)
         self.call_timeout = call_timeout or max(10.0, NETWORK.timeout_seconds)
         # سقف زمني كلي: لا يسمح لأي مسار أن يعلّق الطلب إلى الأبد
@@ -406,6 +413,7 @@ class HCaptchaLiveSolver(BaseSolver):
         last_expected_len: Optional[int] = None
         keep_expected = False
         attempted: List[Dict[str, Any]] = []
+        abstained: List[Any] = []
 
         for round_no in range(1, self.max_rounds + 1):
             if time.time() - start > self.deadline_seconds:
@@ -579,6 +587,39 @@ class HCaptchaLiveSolver(BaseSolver):
                             )
                         )
 
+            # --------- قرار الإرسال: أُرسل أم أمتنع؟ ---------
+            rounds_left = self.max_rounds - round_no
+            # طول متوقّع حقيقي: تلميح الإجابة المرفوضة السابقة، لا طول النص
+            # نفسه (مقارنة الشيء بنفسه فحص ميت كان يُعطي إشارة كاذبة دائمًا).
+            expected_len = last_expected_len if keep_expected else None
+            raw_plausibility = details.get("plausibility")
+            # 0.0 قيمة حقيقية (خطأ واضح)، لا تعني «لا توجد إشارة» ⇒ لا نستخدم `or`
+            plausibility = None if raw_plausibility is None else float(raw_plausibility)
+            vote = decide_abstain(
+                confidence=confidence,
+                threshold=threshold_for_round(round_no, self.abstain_threshold),
+                expected_len=expected_len,
+                text=text,
+                rounds_left=rounds_left,
+                plausibility=plausibility,
+            )
+            abstained.append(vote)
+            # الامتناع يعمل دائمًا (حتى في آخر جولة): قراءة فاشلة لا تُرسل.
+            # إيقافه متاح صراحةً عبر allow_abstain=False.
+            if self.allow_abstain and not vote.send:
+                logs.append(
+                    AttemptLog(
+                        round_no,
+                        "abstain",
+                        False,
+                        vote.reason,
+                        extra={"probability": round(vote.probability, 4), "answer": text},
+                    )
+                )
+                last_error = vote.reason
+                # نتجاهل هذه القراءة ونطلب تحديًا جديدًا (بلا إرسال)
+                continue
+
             try:
                 checked = self._guard(
                     self.checkcaptcha,
@@ -622,6 +663,7 @@ class HCaptchaLiveSolver(BaseSolver):
                         "ocr": details,
                         "attempts": attempted,
                         "logs": [log.to_dict() for log in logs],
+                        "abstentions": [v.to_dict() for v in abstained],
                     },
                 )
 
@@ -643,6 +685,8 @@ class HCaptchaLiveSolver(BaseSolver):
             "last_certainty": round(last_certainty, 4),
             "max_rounds": self.max_rounds,
             "breaker": breaker.snapshot(),
+            "abstentions": [v.to_dict() for v in abstained],
+            "abstained_all": bool(abstained) and all(not v.send for v in abstained),
             "suggestion": _retry_suggestion(attempted, last_error),
         }
         if attempted:

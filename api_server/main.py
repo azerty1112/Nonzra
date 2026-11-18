@@ -224,6 +224,11 @@ async def lifespan(_app: FastAPI):
             mind.save()
         except Exception:  # noqa: BLE001
             pass
+        # كتابة مؤجّلة: نحفظ ما تبقّى من عينات التدريب قبل الإيقاف
+        try:
+            training_dataset.flush()
+        except Exception:  # noqa: BLE001
+            pass
         await scheduled_job_manager.stop_scheduler()
         await worker.stop()
 
@@ -314,9 +319,18 @@ BLOCK_DURATION_SECONDS = POLICY.ip_block_seconds
 
 
 def _get_client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    """عنوان العميل الحقيقي.
+
+    ``X-Forwarded-For`` يُصدَّق **فقط** عند تفعيل ``NONECAP_TRUST_FORWARDED_FOR``،
+    وإلا فأي عميل يزوّر العنوان ويُفلت من تحديد المعدل والحظر كليًا.
+    """
+    if POLICY.trust_forwarded_for:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            # آخر عنوان يضيفه الوكيل الموثوق هو الأدقّ من أوله (القابل للتزوير)
+            parts = [p.strip() for p in forwarded.split(",") if p.strip()]
+            if parts:
+                return parts[-1]
     return request.client.host if request.client else "unknown"
 
 
@@ -332,10 +346,27 @@ def _block_ip(ip: str) -> None:
     _IP_BLOCK_LIST[ip] = time.time()
 
 
+#: سقف عدد العناوين المتتبَّعة — يمنع استنزاف الذاكرة برشّ عناوين وهمية.
+MAX_TRACKED_IPS = max(100, int(os.environ.get("NONECAP_MAX_TRACKED_IPS", "10000")))
+
+
 def _check_rate_limit(ip: str) -> bool:
     if MAX_REQUESTS_PER_MINUTE <= 0:
         return True  # الوضع غير المحدود
     now = time.time()
+    if ip not in _REQUEST_TIMESTAMPS and len(_REQUEST_TIMESTAMPS) >= MAX_TRACKED_IPS:
+        # عند الامتلاء: نطرد أقدم عناوين خاملة بدل النمو بلا حد
+        stale = [
+            key
+            for key, stamps in _REQUEST_TIMESTAMPS.items()
+            if not stamps or now - stamps[-1] > 60.0
+        ]
+        for key in stale[: max(1, len(stale))]:
+            _REQUEST_TIMESTAMPS.pop(key, None)
+        if len(_REQUEST_TIMESTAMPS) >= MAX_TRACKED_IPS:
+            # لا شيء خامل: نرفض التتبّع الجديد بدل تجاوز السقف (fail-closed
+            # على الذاكرة، مع السماح بالطلب نفسه حتى لا نحجب خدمة مشروعة)
+            return True
     timestamps = _REQUEST_TIMESTAMPS.get(ip, [])
     # احتفظ فقط بطلبات الدقيقة الأخيرة
     timestamps = [t for t in timestamps if now - t < 60.0]
@@ -386,6 +417,96 @@ def _sweep_memory() -> None:
     for ip, blocked_at in list(_IP_BLOCK_LIST.items()):
         if now - blocked_at > max(1, BLOCK_DURATION_SECONDS):
             _IP_BLOCK_LIST.pop(ip, None)
+
+
+class _BodySizeGuard:
+    """يقطع قراءة الجسم عند تجاوز السقف — لا يقرأ 40 ميغابايت ليرفضها.
+
+    حماية على مستوى ASGI لا على مستوى المسار: تعمل لكل نقطة نهاية، وتوقف
+    القراءة عند الحد بدل جمع الرسالة كاملة في الذاكرة أولًا.
+    """
+
+    def __init__(self, app: Any, limit: int) -> None:
+        self.app = app
+        self.limit = limit
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") != "http" or not self.limit:
+            await self.app(scope, receive, send)
+            return
+
+        # رفض مبكر بلا قراءة إن أعلن العميل حجمًا أكبر من السقف
+        for name, value in scope.get("headers") or []:
+            if name == b"content-length":
+                try:
+                    if int(value) > self.limit:
+                        await _send_413(send, self.limit)
+                        return
+                except ValueError:
+                    pass
+
+        consumed = 0
+        rejected = False
+
+        async def guarded_receive() -> Any:
+            nonlocal consumed, rejected
+            message = await receive()
+            if message.get("type") == "http.request":
+                consumed += len(message.get("body", b""))
+                if consumed > self.limit:
+                    rejected = True
+                    raise _BodyTooLarge(consumed)
+            return message
+
+        started = False
+
+        async def guarded_send(message: Any) -> None:
+            nonlocal started
+            if message.get("type") == "http.response.start":
+                started = True
+            if not rejected:
+                await send(message)
+
+        try:
+            await self.app(scope, guarded_receive, guarded_send)
+        except _BodyTooLarge:
+            pass
+        if rejected and not started:
+            await _send_413(send, self.limit)
+
+
+class _BodyTooLarge(Exception):
+    """إشارة داخلية: تجاوز الجسم السقف أثناء التدفّق."""
+
+
+async def _send_413(send: Any, limit: int) -> None:
+    body = json.dumps(
+        {
+            "detail": (
+                f"جسم الطلب أكبر من الحد المسموح ({limit} بايت). "
+                "صغّر الصورة أو ارفعها عبر حقل file."
+            )
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 413,
+            "headers": [
+                (b"content-type", b"application/json; charset=utf-8"),
+                (b"content-length", str(len(body)).encode()),
+                (b"connection", b"close"),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})
+
+
+# حدّ حجم الجسم: يعمل قبل أي توجيه أو تحليل، ويقطع القراءة عند الحد.
+# (يُسجَّل هنا لأن الصنف معرَّف أعلاه؛ ترتيب التسجيل لا يغيّر الترتيب الداخلي.)
+if POLICY.max_body_bytes:
+    app.add_middleware(_BodySizeGuard, limit=POLICY.max_body_bytes)
 
 
 @app.middleware("http")
@@ -732,9 +853,11 @@ async def _run_job(
 
         # تسجيل في محرك الخبرة إذا كانت الثقة عالية
         if result.success and result.confidence >= self_improver.retrain_confidence_threshold:
+            # دفاع على طبقتين: لا نُرمّز الصورة إطلاقًا إن كان التخزين معطّلًا.
+            # (المجموعة تُسقطها أيضًا، لكن عدم تمريرها أفضل من تمريرها ثم إسقاطها.)
             image_b64 = None
             image_bytes = kwargs.get("image_bytes")
-            if image_bytes is not None:
+            if image_bytes is not None and training_dataset.store_images:
                 import base64
 
                 image_b64 = base64.b64encode(image_bytes).decode("utf-8")
@@ -800,12 +923,44 @@ async def _run_job(
 
 
 def _decode_b64(value: Optional[str]) -> Optional[bytes]:
+    """يفكّ ترميز base64 مع سقف حجم قبل الترميز — لا نفكّ ما لا نقبله.
+
+    فكّ ترميز 40 ميغابايت ثم رفضها يعني أن العملية (والذاكرة) أُهدرت بالفعل.
+    نقيس أولًا على طول النص المُرمَّز لأنه متاح بلا تكلفة.
+    """
     if not value:
         return None
+    limit = POLICY.max_image_bytes
+    if limit and len(value) * 3 // 4 > limit + 1024:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"الصورة أكبر من الحد المسموح ({limit} بايت بعد فك الترميز). "
+                "صغّر الصورة أو ارفعها عبر حقل file."
+            ),
+        )
     try:
-        return base64.b64decode(value)
+        data = base64.b64decode(value)
     except Exception:
         return None
+    if limit and len(data) > limit:
+        raise HTTPException(
+            status_code=413,
+            detail=f"الصورة أكبر من الحد المسموح ({limit} بايت بعد فك الترميز)",
+        )
+    return data
+
+
+async def _read_limited(upload: Any) -> bytes:
+    """يقرأ ملفًا مرفوعًا بحدّ أقصى — يرفض 413 بدل استهلاك الذاكرة بلا سقف."""
+    limit = POLICY.max_image_bytes
+    data = await upload.read()
+    if limit and len(data) > limit:
+        raise HTTPException(
+            status_code=413,
+            detail=f"الملف المرفوع أكبر من الحد المسموح ({limit} بايت)",
+        )
+    return data
 
 
 async def _parse_solve_request(request: Request) -> BaseSolveRequest:
@@ -815,6 +970,19 @@ async def _parse_solve_request(request: Request) -> BaseSolveRequest:
     دعم الصيغتين يمنع أخطاء 422 التي كانت تحدث عند استخدام الصيغة الأخرى.
     """
     content_type = (request.headers.get("content-type") or "").lower()
+    # حماية أولية بلا تكلفة: نصدّق Content-Length المعلن قبل قراءة الجسم.
+    declared = request.headers.get("content-length")
+    if declared and POLICY.max_body_bytes:
+        try:
+            if int(declared) > POLICY.max_body_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=(
+                        f"جسم الطلب أكبر من الحد المسموح ({POLICY.max_body_bytes} بايت)"
+                    ),
+                )
+        except ValueError:
+            pass
     if "application/json" in content_type:
         try:
             payload = await request.json()
@@ -890,8 +1058,8 @@ async def solve_sync(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"نوع كبتشا غير مدعوم: {captcha_type}")
 
-    file_bytes = await file.read() if file else None
-    template_bytes = await template.read() if template else None
+    file_bytes = await _read_limited(file) if file else None
+    template_bytes = await _read_limited(template) if template else None
     kwargs = _build_kwargs(req, file_bytes, template_bytes)
 
     # الأنواع المحلية تحتاج صورة فعلية: خطأ 400 واضح أفضل من فشل صامت
@@ -1013,8 +1181,8 @@ async def solve_async(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"نوع كبتشا غير مدعوم: {captcha_type}")
 
-    file_bytes = await file.read() if file else None
-    template_bytes = await template.read() if template else None
+    file_bytes = await _read_limited(file) if file else None
+    template_bytes = await _read_limited(template) if template else None
     kwargs = _build_kwargs(req, file_bytes, template_bytes)
 
     # --------- الذكاء التحليلي ----------
@@ -1287,8 +1455,8 @@ async def auto_solve(
     _auth(credentials)
     import asyncio
 
-    file_bytes = await file.read() if file else None
-    template_bytes = await template.read() if template else None
+    file_bytes = await _read_limited(file) if file else None
+    template_bytes = await _read_limited(template) if template else None
 
     # Enhanced intelligence: analyze and preprocess before solving
     image = None
@@ -1406,8 +1574,8 @@ async def auto_submit(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> Dict[str, Any]:
     _auth(credentials)
-    file_bytes = await file.read() if file else None
-    template_bytes = await template.read() if template else None
+    file_bytes = await _read_limited(file) if file else None
+    template_bytes = await _read_limited(template) if template else None
     payload: Dict[str, Any] = {
         "captcha_type": captcha_type,
         "image_bytes": file_bytes,
@@ -1964,6 +2132,7 @@ class BackupResponse(BaseModel):
     includes_intelligence: bool
     status: str
     error: Optional[str] = None
+    excluded: list[str] = []  # ملفات حسّاسة استُثنيت (شفافية الخصوصية)
 
 
 @app.post("/backup/create", response_model=BackupResponse)
@@ -1997,6 +2166,7 @@ async def create_backup(
         includes_intelligence=backup.includes_intelligence,
         status=backup.status,
         error=backup.error,
+        excluded=backup.excluded,
     )
 
 
@@ -2134,8 +2304,15 @@ class HCaptchaLiveRequest(BaseModel):
     sitekey: str = Field(..., description="مفتاح موقع hCaptcha")
     url: str = Field(..., description="صفحة الموقع التي تحتوي الكبتشا")
     host: Optional[str] = Field(None, description="المضيف، افتراضيًا من url")
-    max_rounds: int = Field(3, ge=1, le=5)
+    max_rounds: int = Field(2, ge=1, le=5)
     deadline_seconds: float = Field(90.0, ge=10, le=300, description="سقف زمني كلي للطلب")
+    allow_abstain: bool = Field(
+        True,
+        description="الامتناع عن إرسال إجابة منخفضة الثقة بدل إحراق محاولة (موصى به)",
+    )
+    abstain_threshold: float = Field(
+        0.45, ge=0.0, le=1.0, description="عتبة الاحتمال الدنيا للإرسال"
+    )
 
 
 @app.get("/hcaptcha/probe", tags=["solving"])
@@ -2159,6 +2336,40 @@ async def ocr_engines(
     """محرّكات قراءة النص المتاحة فعليًا على هذا الجهاز وترتيب الأفضلية."""
     _auth(credentials)
     return engines_status()
+
+
+@app.get("/training/samples", tags=["system"])
+@limiter.limit("60/minute")
+async def training_samples_stats(
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> Dict[str, Any]:
+    """حالة مجموعة عينات التدريب وسياسة الخصوصية المطبّقة فعليًا."""
+    _auth(credentials)
+    return training_dataset.stats()
+
+
+@app.delete("/training/samples", tags=["system"])
+@limiter.limit("30/minute")
+async def training_samples_purge(
+    request: Request,
+    captcha_type: Optional[str] = Query(None, description="حذف نوع محدّد فقط"),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> Dict[str, Any]:
+    """حق الحذف: يمحو عينات التدريب (كلها أو لنوع) ويعيد عدد المحذوف.
+
+    يُستخدم عند طلب المستخدم حذف بياناته، أو لتنظيف بيئة اختبار.
+    """
+    _auth(credentials)
+    removed = training_dataset.purge(captcha_type=captcha_type)
+    try:
+        audit_log(
+            action="training_purge",
+            resource="training_samples",
+            details={"captcha_type": captcha_type, "removed": removed},
+        )
+    except Exception:  # noqa: BLE001 - التدقيق لا يجب أن يعطّل الحذف
+        pass
+    return {"purged": removed, "captcha_type": captcha_type, **training_dataset.stats()}
 
 
 @app.get("/health/resilience", tags=["system"])
@@ -2249,7 +2460,10 @@ async def hcaptcha_live_solve(
 
     request_id = uuid.uuid4().hex[:12]
     solver = HCaptchaLiveSolver(
-        max_rounds=req.max_rounds, deadline_seconds=req.deadline_seconds
+        max_rounds=req.max_rounds,
+        deadline_seconds=req.deadline_seconds,
+        allow_abstain=req.allow_abstain,
+        abstain_threshold=req.abstain_threshold,
     )
     # سقف زمني صارم على مستوى الطلب أيضًا: لا تعليق حتى لو تجاوز المحلّل مهلته
     try:

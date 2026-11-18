@@ -420,3 +420,230 @@ def test_health_resilience_endpoint(client):
     payload = response.json()
     assert "breakers" in payload and "ocr" in payload
     assert payload["ocr"]["ensemble"] is True
+
+
+# ---------------------- الامتناع (abstain) ----------------------
+
+
+def test_solver_abstains_instead_of_burning_a_round(fake_hcaptcha, monkeypatch):
+    """قراءة منخفضة الثقة ⇒ لا إرسال، وتحدٍّ جديد بدل إحراق محاولة."""
+    monkeypatch.setattr(
+        hcaptcha_live,
+        "_read_text_detailed",
+        lambda data, expected_len=None, deep=False, order=None: {
+            "text": "AB12",
+            "confidence": 0.2,  # منخفضة جدًا
+            "engine": "stub",
+            "plausibility": 1.0,
+        },
+    )
+    solver = hcaptcha_live.HCaptchaLiveSolver(max_rounds=2, allow_abstain=True)
+    result = solver.solve(sitekey="sk", url="https://example.com")
+
+    # الجولة 1 تمتنع (لا إرسال)، والجولة الأخيرة ترسل أفضل ما لديها
+    assert fake_hcaptcha.answers and len(fake_hcaptcha.answers) == 1
+    assert result.metadata["abstentions"]
+    assert result.metadata["abstentions"][0]["send"] is False
+    assert any(log["action"] == "abstain" for log in result.metadata["logs"])
+
+
+def test_solver_sends_last_round_even_when_unsure(fake_hcaptcha, monkeypatch):
+    """في الجولة الأخيرة لا معنى للامتناع: نرسل أفضل ما لدينا."""
+    monkeypatch.setattr(
+        hcaptcha_live,
+        "_read_text_detailed",
+        lambda data, expected_len=None, deep=False, order=None: {
+            "text": "AB12",
+            "confidence": 0.2,
+            "engine": "stub",
+            "plausibility": 1.0,
+        },
+    )
+    result = hcaptcha_live.HCaptchaLiveSolver(max_rounds=1, allow_abstain=True).solve(
+        sitekey="sk", url="https://example.com"
+    )
+    assert len(fake_hcaptcha.answers) == 1
+    assert result.success is True  # AB12 صحيحة في المحاكي
+
+
+def test_abstain_can_be_disabled(fake_hcaptcha, monkeypatch):
+    monkeypatch.setattr(
+        hcaptcha_live,
+        "_read_text_detailed",
+        lambda data, expected_len=None, deep=False, order=None: {
+            "text": "AB12",
+            "confidence": 0.2,
+            "engine": "stub",
+            "plausibility": 1.0,
+        },
+    )
+    fake_hcaptcha.expected = "ZZZZ"
+    solver = hcaptcha_live.HCaptchaLiveSolver(max_rounds=1, allow_abstain=False)
+    result = solver.solve(sitekey="sk", url="https://example.com")
+    assert result.success is False
+    assert len(fake_hcaptcha.answers) == 1  # أرسل رغم انخفاض الثقة
+
+
+def test_single_character_read_is_always_refused(fake_hcaptcha, monkeypatch):
+    """نص بحرف واحد = قراءة فاشلة، حتى لو ادّعى المحرّك ثقة عالية."""
+    monkeypatch.setattr(
+        hcaptcha_live,
+        "_read_text_detailed",
+        lambda data, expected_len=None, deep=False, order=None: {
+            "text": "A",
+            "confidence": 0.99,
+            "engine": "stub",
+            "plausibility": 1.0,
+        },
+    )
+    solver = hcaptcha_live.HCaptchaLiveSolver(max_rounds=2)
+    result = solver.solve(sitekey="sk", url="https://example.com")
+    assert result.success is False
+    assert fake_hcaptcha.answers == []
+
+
+# ---------------------- سياسة الامتناع (وحدة مستقلة) ----------------------
+
+
+def test_abstain_thresholds_and_hard_refusal():
+    from solver_engine.abstain import decide, threshold_for_round
+
+    sure = decide(0.95, text="AB12", expected_len=4, rounds_left=2)
+    unsure = decide(0.2, text="AB12", expected_len=4, rounds_left=2)
+    last_round = decide(0.2, text="AB12", rounds_left=0)
+    single = decide(0.99, text="A", rounds_left=2)
+
+    assert sure.send is True and sure.probability > 0.8
+    assert unsure.send is False and unsure.retry_advice
+    assert last_round.send is True  # لا محاولات ⇒ أرسل أفضل تخمين
+    assert single.send is False  # لكن حرف واحد يُرفض دائمًا
+    # العتبة تتراجع مع الجولات حتى لا نبقى ممتنعين بلا نهاية
+    assert threshold_for_round(1) > threshold_for_round(3)
+    assert threshold_for_round(3) >= 0.2
+
+
+def test_abstain_gate_uses_shape_signal_not_confidence():
+    """القياس أثبت أن الثقة لا تفصل الصحيح عن الخطأ — الشكل هو ما يفصل.
+
+    الأرقام الحقيقية على 24 صورة: الصحيح ثقة 0.95 وشكل 1.00، والخطأ ثقة 0.90
+    وشكل 0.84. أي عتبة على الثقة وحدها ترفض صحيحًا بقدر ما ترفض خطأً.
+    """
+    from solver_engine.abstain import decide
+
+    # ثقة عالية + شكل سليم ⇒ يُرسل
+    good = decide(0.95, text="AB12", expected_len=4, rounds_left=1, plausibility=1.0)
+    # ثقة عالية جدًا + شكل متناقض ⇒ يمتنع (هذا ما فشل خطأً قبل الإصلاح)
+    doubtful = decide(1.0, text="Y7H9D", rounds_left=1, plausibility=0.69)
+
+    assert good.send is True
+    assert doubtful.send is False
+    assert doubtful.probability < good.probability
+    assert doubtful.extra.get("shape_doubt") is True
+
+
+def test_abstain_improves_precision_on_real_batch(monkeypatch):
+    """انحدار: على دفعة حقيقية، الامتناع يرفع الدقة لكل محاولة ولا يخسر صحيحًا."""
+    from solver_engine import bench
+    from solver_engine import ocr_plus as op
+    from solver_engine.abstain import decide
+    from solver_engine.ocr import read_text
+
+    items = bench.dataset(count=8, seed=7, tier="realistic")
+    sent = 0
+    sent_correct = 0
+    abstained_wrong = 0
+    abstained_total = 0
+    for item in items:
+        result = read_text(item["image"], allowlist=op.DEFAULT_CHARSET, level="fast")
+        decision = decide(
+            confidence=result.confidence,
+            text=result.text or "",
+            rounds_left=1,
+            plausibility=result.plausibility,
+        )
+        correct = result.text == item["label"]
+        if decision.send:
+            sent += 1
+            sent_correct += int(correct)
+        else:
+            abstained_total += 1
+            abstained_wrong += int(not correct)
+
+    assert sent > 0
+    # كل ما امتنع عنه النظام لم يكن صحيحًا (هذا هو مكسب الامتناع كله)
+    assert abstained_wrong == abstained_total
+    # والدقة بين ما أُرسل أعلى من الدقة العامة على نفس الدفعة
+    overall = sum(
+        1
+        for item in items
+        if read_text(item["image"], allowlist=op.DEFAULT_CHARSET, level="fast").text
+        == item["label"]
+    ) / len(items)
+    assert sent_correct / sent >= overall
+
+
+def test_zero_plausibility_is_treated_as_signal_not_absence():
+    """0.0 قيمة مقيسة (فشل واضح) وليست «لا إشارة» — كان `or None` يفلتها."""
+    from solver_engine.abstain import decide
+
+    zero = decide(0.99, text="ABCD", rounds_left=1, plausibility=0.0)
+    missing = decide(0.99, text="ABCD", rounds_left=1, plausibility=None)
+
+    assert zero.send is False
+    assert missing.send is True
+    assert zero.probability < missing.probability
+
+
+def test_expected_len_hint_comes_from_previous_rejection():
+    """الطول المتوقّع يجب أن يأتي من رفض سابق، لا من النص نفسه (فحص ميت)."""
+    import inspect
+
+    from solver_engine import hcaptcha_live
+
+    source = inspect.getsource(hcaptcha_live.HCaptchaLiveSolver.solve)
+    assert "expected_len=len(text)" not in source
+    assert "expected_len = last_expected_len if keep_expected else None" in source
+
+
+def test_abstain_probability_is_bounded_by_learned_acceptance_rate():
+    """قياس: حين يكون النظام مفرط الثقة، التعلّم يخفض الاحتمال فعلاً.
+
+    محاكاة 80 نتيجة حقيقية من hCaptcha (ثقة 0.95 تنجح 40% فقط) خفّضت احتمال
+    0.95 من 0.88 (قبل التعلّم) إلى 0.49 (بعده، معايَر).
+
+    **حد معروف ومقصود:** الانكماش في ``ConfidenceCalibrator`` يسحب كل الثقات
+    نحو المعدل الأساسي، فتصبح الفروق بينها ضيّقة (0.95→0.49 و0.3→0.40).
+    لذلك تبقى المرجعية الحاسمة في هذا المسار هي ``plausibility``، لا الثقة.
+    """
+    import tempfile
+
+    from intelligence.ocr_policy import reset_policy
+    from solver_engine.abstain import _calibrate, decide
+    from solver_engine.hcaptcha_live import _learn
+
+    # سياسة جديدة معزولة: السياسة المشتركة عالميّة وقد تحمل تعلّماً من اختبارات
+    # أخرى، فيصبح عدد المشاهدات غير متوقّع. نبدأ من صفر صراحةً.
+    policy = reset_policy(path=tempfile.mktemp(suffix=".json"))
+    before, was_calibrated = _calibrate(0.95)
+    assert was_calibrated is False
+
+    for index in range(80):
+        _learn(
+            {"confidence": 0.95, "engine": "fake", "strategy": "a:b"},
+            accepted=(index % 10 < 4),
+            answer="ABCD",
+        )
+
+    after, now_calibrated = _calibrate(0.95)
+    assert policy.calibrator.total_observations == 80
+    assert now_calibrated is True
+    # التعلّم خفّض الثقة الزائفة بفارق كبير
+    assert after < before - 0.25
+    assert after < 0.55
+
+    # والاحتمال المحسوب صار محكومًا بمعدل القبول المتعلَّم
+    decision = decide(0.95, text="ABCD", rounds_left=1)
+    assert decision.calibrated is True
+    assert decision.probability < 0.55
+
+    reset_policy(path=tempfile.mktemp(suffix=".json"))  # لا نسرّب التعلّم
